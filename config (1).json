@@ -1,0 +1,9 @@
+{
+  "guilds": {},
+  "premium_packages": [],
+  "payment_methods": {
+    "qris": true,
+    "bank": true,
+    "ewallet": true
+  }
+}
