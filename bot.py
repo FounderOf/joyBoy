@@ -1,13 +1,19 @@
 """
 JoyCannot Discord Bot
 Author: JoyCannot Team
-Version: 1.1.0
+Version: 1.2.0
 License: MIT
 
-Fixes v1.1.0:
-  - Premium setup now uses embed + interactive button UI
-  - Slash commands also respond to prefix (except owner-only prefix cmds)
-  - Event system: live countdown embed → "Started" edit → "Ended" edit
+Changes v1.2.0:
+  - Payment methods now support real account details (QRIS URL/info, Bank rekening, E-Wallet number)
+  - Premium command lock system: lock any command as 💎 PREMIUM via interactive UI
+  - Premium label auto-applied to slash command descriptions after lock/unlock (re-sync)
+  - Prefix users get embed notification when trying a premium-locked command
+  - All owner/setup commands now use embed + button UI (maintenance, setchannel)
+  - Maintenance broadcast: compose → preview → confirm flow with Edit/Cancel buttons
+  - setchannel: modal-based input with server list view
+  - Added /setpremiumrole for server admins to set which role has premium access
+  - Global premium user list (owner can add/remove by user ID)
 """
 
 import discord
@@ -44,12 +50,36 @@ def load_config() -> dict:
         default = {
             "guilds": {},
             "premium_packages": [],
-            "payment_methods": {"qris": True, "bank": True, "ewallet": True}
+            "premium_commands": [],   # list of command names locked to premium
+            "premium_users":    [],   # global list of user IDs with premium access
+            "payment_methods": {
+                "qris":    {"enabled": True, "image_url": "", "info": ""},
+                "bank":    {"enabled": True, "bank_name": "", "account_number": "", "account_name": ""},
+                "ewallet": {"enabled": True, "type": "", "number": ""},
+            }
         }
         save_config(default)
         return default
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    # ── Migrate old boolean payment_methods → new dict format ──
+    pm = data.get("payment_methods", {})
+    if pm and isinstance(next(iter(pm.values()), None), bool):
+        data["payment_methods"] = {
+            "qris":    {"enabled": pm.get("qris",    True), "image_url": "", "info": ""},
+            "bank":    {"enabled": pm.get("bank",    True), "bank_name": "", "account_number": "", "account_name": ""},
+            "ewallet": {"enabled": pm.get("ewallet", True), "type": "", "number": ""},
+        }
+    if "payment_methods" not in data:
+        data["payment_methods"] = {
+            "qris":    {"enabled": True, "image_url": "", "info": ""},
+            "bank":    {"enabled": True, "bank_name": "", "account_number": "", "account_name": ""},
+            "ewallet": {"enabled": True, "type": "", "number": ""},
+        }
+    data.setdefault("premium_commands", [])
+    data.setdefault("premium_users",    [])
+    save_config(data)
+    return data
 
 def save_config(cfg: dict):
     os.makedirs("data", exist_ok=True)
@@ -63,6 +93,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
             "language": "en",
             "main_channel": None,
             "announce_channel": None,
+            "premium_role_id": None,   # role ID that grants premium access in this guild
             "ticket": {
                 "category": None,
                 "log_channel": None,
@@ -73,7 +104,9 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
             "active_tickets": {}
         }
         save_config(cfg)
-    return cfg["guilds"][gid]
+    gc = cfg["guilds"][gid]
+    gc.setdefault("premium_role_id", None)
+    return gc
 
 # ─────────────────────────────────────────────
 # LANGUAGE SYSTEM
@@ -270,6 +303,47 @@ bot = commands.Bot(
 
 cfg = load_config()
 
+# ── Store original command descriptions for premium label system ──
+ORIGINAL_CMD_DESCRIPTIONS: dict[str, str] = {}
+
+# ─────────────────────────────────────────────
+# PREMIUM ACCESS HELPERS
+# ─────────────────────────────────────────────
+
+def user_has_premium(guild: Optional[discord.Guild], user: discord.abc.User) -> bool:
+    """Return True if user has premium access (global list OR guild premium role)."""
+    if user.id in cfg.get("premium_users", []):
+        return True
+    if guild:
+        gc  = guild_cfg(cfg, guild.id)
+        rid = gc.get("premium_role_id")
+        if rid:
+            role = guild.get_role(rid)
+            if role and isinstance(user, discord.Member) and role in user.roles:
+                return True
+    return False
+
+def is_premium_command(cmd_name: str) -> bool:
+    return cmd_name in cfg.get("premium_commands", [])
+
+async def apply_premium_labels():
+    """Update slash command descriptions to show/hide 💎 label, then re-sync."""
+    premium_cmds = set(cfg.get("premium_commands", []))
+    for cmd in bot.tree.get_commands():
+        base_name = cmd.name
+        orig = ORIGINAL_CMD_DESCRIPTIONS.get(base_name, cmd.description)
+        cmd.description = (f"[💎] {orig}"[:100] if base_name in premium_cmds else orig)
+        if hasattr(cmd, "commands"):
+            for sub in cmd.commands:
+                sub_full = f"{base_name} {sub.name}"
+                sub_orig = ORIGINAL_CMD_DESCRIPTIONS.get(sub_full, sub.description)
+                sub.description = (f"[💎] {sub_orig}"[:100] if sub_full in premium_cmds else sub_orig)
+    try:
+        synced = await bot.tree.sync()
+        logging.info(f"[Premium Labels] Re-synced {len(synced)} commands.")
+    except Exception as e:
+        logging.error(f"[Premium Labels] Sync error: {e}")
+
 # Anti-spam tracker
 spam_tracker:      dict[int, dict[str, set]] = defaultdict(lambda: defaultdict(set))
 spam_cleanup_times: dict[int, float]          = {}
@@ -286,6 +360,38 @@ SPAM_WINDOW    = 8.0
 
 OWNER_ONLY_CMDS = {"maintenance", "premium", "setchannel"}
 
+# ── Global prefix premium gate ─────────────────────────────────────────────
+@bot.check
+async def global_prefix_premium_check(ctx: commands.Context) -> bool:
+    """Block non-premium users from premium-locked prefix commands."""
+    cmd_name = ctx.command.qualified_name if ctx.command else None
+    if not cmd_name or cmd_name in OWNER_ONLY_CMDS:
+        return True
+    if not is_premium_command(cmd_name):
+        return True
+    if user_has_premium(ctx.guild, ctx.author):
+        return True
+    # Will trigger CheckFailure → handled in on_command_error
+    return False
+
+# ── Global slash premium gate ──────────────────────────────────────────────
+@bot.tree.interaction_check
+async def global_slash_premium_check(i: discord.Interaction) -> bool:
+    """Block non-premium users from premium-locked slash commands."""
+    if not i.command:
+        return True
+    cmd_name = i.command.qualified_name
+    if not is_premium_command(cmd_name):
+        return True
+    if user_has_premium(i.guild, i.user):
+        return True
+    await i.response.send_message(embed=base_embed(
+        "💎 Premium Required",
+        f"The command `/{cmd_name}` requires **Premium** access.\n"
+        "Use `/premium info` to see available packages and how to upgrade.",
+        color=0xF59E0B), ephemeral=True)
+    return False
+
 # ─────────────────────────────────────────────
 # EVENTS
 # ─────────────────────────────────────────────
@@ -293,11 +399,20 @@ OWNER_ONLY_CMDS = {"maintenance", "premium", "setchannel"}
 @bot.event
 async def on_ready():
     print(f"[JoyCannot] Ready as {bot.user} (ID: {bot.user.id})")
+    # ── Snapshot original command descriptions ──
+    for cmd in bot.tree.get_commands():
+        ORIGINAL_CMD_DESCRIPTIONS[cmd.name] = cmd.description
+        if hasattr(cmd, "commands"):
+            for sub in cmd.commands:
+                ORIGINAL_CMD_DESCRIPTIONS[f"{cmd.name} {sub.name}"] = sub.description
     try:
         synced = await bot.tree.sync()
         print(f"[JoyCannot] Synced {len(synced)} slash command(s).")
     except Exception as e:
         print(f"[JoyCannot] Sync error: {e}")
+    # Apply premium labels that were saved from previous session
+    if cfg.get("premium_commands"):
+        await apply_premium_labels()
     cleanup_spam_cache.start()
 
 
@@ -507,24 +622,29 @@ async def do_ping(reply_fn):
     await reply_fn(embed=info_embed("🏓 Pong!", f"Websocket latency: **{round(bot.latency*1000)}ms**"))
 
 async def do_help(reply_fn):
+    pc = set(cfg.get("premium_commands", []))
+    def lbl(name: str) -> str:
+        return f"`{name}` 💎" if name in pc else f"`{name}`"
+
     embed = base_embed("📖 JoyCannot — Command List",
-        "All commands work as `/slash` **and** `!Joy prefix`.")
+        "All commands work as `/slash` **and** `!Joy prefix`.\n"
+        "💎 = Premium required")
     embed.add_field(name="🛡️ Moderation", value=(
-        "`kick` `ban` `timeout` `warn`\n"
-        "`addrole` `removerole` `move`\n"
-        "`userinfo` `avatar` `addemoji` `ping`"
+        f"{lbl('kick')} {lbl('ban')} {lbl('timeout')} {lbl('warn')}\n"
+        f"{lbl('addrole')} {lbl('removerole')} {lbl('move')}\n"
+        f"{lbl('userinfo')} {lbl('avatar')} {lbl('addemoji')} {lbl('ping')}"
     ), inline=False)
     embed.add_field(name="🎫 Tickets", value=(
-        "`ticket setup` · `ticket panel` · `ticket close`"
+        f"{lbl('ticket setup')} · {lbl('ticket panel')} · {lbl('ticket close')}"
     ), inline=False)
     embed.add_field(name="📅 Events", value=(
-        "`event create` · `event channel`"
+        f"{lbl('event create')} · {lbl('event channel')}"
     ), inline=False)
     embed.add_field(name="🌐 Language", value=(
-        "`language set` · `language list`"
+        f"{lbl('language set')} · {lbl('language list')}"
     ), inline=False)
     embed.add_field(name="💎 Premium", value=(
-        "`premium info` · `premium order`"
+        f"{lbl('premium info')} · {lbl('premium order')} · {lbl('premium setpremiumrole')}"
     ), inline=False)
     embed.add_field(name="👑 Owner Only (prefix)", value=(
         "`!Joy maintenance` · `!Joy premium` · `!Joy setchannel`"
@@ -786,8 +906,24 @@ async def slash_premium_info(i: discord.Interaction):
             inline=True
         )
     pm = cfg.get("payment_methods", {})
-    methods = [k.upper() for k, v in pm.items() if v]
-    embed.add_field(name="💳 Payment Methods", value=" · ".join(methods) or "None", inline=False)
+    pay_lines = []
+    for key, data in pm.items():
+        if not (isinstance(data, dict) and data.get("enabled")):
+            continue
+        if key == "qris":
+            info_txt = data.get("info") or "Available"
+            pay_lines.append(f"✅ **QRIS** — {info_txt}")
+        elif key == "bank":
+            bn = data.get("bank_name") or "-"
+            an = data.get("account_number") or "-"
+            anm = data.get("account_name") or "-"
+            pay_lines.append(f"✅ **Bank Transfer** — {bn} · `{an}` a/n {anm}")
+        elif key == "ewallet":
+            etype = data.get("type") or "-"
+            num   = data.get("number") or "-"
+            pay_lines.append(f"✅ **E-Wallet** ({etype}) — `{num}`")
+    embed.add_field(name="💳 Payment Methods",
+        value="\n".join(pay_lines) if pay_lines else "No payment methods enabled.", inline=False)
     await i.response.send_message(embed=embed)
 
 @premium_slash.command(name="order", description="Order a premium package.")
@@ -801,8 +937,22 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
     pkg = next((p for p in cfg.get("premium_packages", []) if p["name"].lower() == package_name.lower()), None)
     if not pkg:
         return await i.response.send_message(embed=error_embed("Package not found. Use `/premium info`."), ephemeral=True)
-    if not cfg.get("payment_methods", {}).get(payment):
+    pm_entry = cfg.get("payment_methods", {}).get(payment, {})
+    if not (isinstance(pm_entry, dict) and pm_entry.get("enabled")):
         return await i.response.send_message(embed=error_embed("Payment method not available."), ephemeral=True)
+
+    # Build payment detail string
+    if payment == "qris":
+        pay_detail = pm_entry.get("info") or "Contact owner for QRIS details."
+        if pm_entry.get("image_url"):
+            pay_detail += f"\n[Scan QRIS]({pm_entry['image_url']})"
+    elif payment == "bank":
+        pay_detail = (f"**Bank:** {pm_entry.get('bank_name','-')}\n"
+                      f"**No. Rekening:** `{pm_entry.get('account_number','-')}`\n"
+                      f"**Atas Nama:** {pm_entry.get('account_name','-')}")
+    else:  # ewallet
+        pay_detail = (f"**Tipe:** {pm_entry.get('type','-')}\n"
+                      f"**Nomor:** `{pm_entry.get('number','-')}`")
 
     order_embed = base_embed("💎 New Premium Order",
         f"**Package:** {pkg['name']}\n**Duration:** {pkg.get('duration','N/A')}\n"
@@ -819,8 +969,9 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
             pass
 
     confirm = base_embed("✅ Order Received!",
-        f"Order for **{pkg['name']}** submitted!\n**Payment:** {payment.upper()}\n"
-        f"**Total:** {pkg.get('price','N/A')}\nOur team will DM you shortly.")
+        f"Order for **{pkg['name']}** submitted!\n\n"
+        f"**Payment:** {payment.upper()}\n{pay_detail}\n\n"
+        f"**Total:** {pkg.get('price','N/A')}\n\nOur team will DM you shortly.")
     try:
         await i.user.send(embed=confirm)
     except Exception:
@@ -828,6 +979,21 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
     await i.response.send_message(embed=success_embed("Order submitted! Check your DMs."), ephemeral=True)
 
 bot.tree.add_command(premium_slash)
+
+# ── Set premium role per guild (admin slash) ──────────────────────────────
+@bot.tree.command(name="setpremiumrole", description="Set the role that grants premium access in this server.")
+@app_commands.describe(role="Role to treat as premium")
+async def slash_set_premium_role(i: discord.Interaction, role: Optional[discord.Role] = None):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    gc["premium_role_id"] = role.id if role else None
+    save_config(cfg)
+    if role:
+        await i.response.send_message(embed=success_embed(
+            f"Premium role set to {role.mention}.\nMembers with this role can use premium-locked commands."))
+    else:
+        await i.response.send_message(embed=success_embed("Premium role cleared."))
 
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
@@ -1090,25 +1256,55 @@ def is_owner():
 def build_premium_embed() -> discord.Embed:
     packages = cfg.get("premium_packages", [])
     pm       = cfg.get("payment_methods", {})
+    pc       = cfg.get("premium_commands", [])
+    pu       = cfg.get("premium_users", [])
 
     embed = base_embed("💎 Premium Package Manager",
-        "Manage packages and payment methods below.\n"
-        "Use the buttons to add/remove packages or toggle payment methods.")
+        "Manage packages, payment methods, command locks, and premium users below.")
 
+    # ── Packages ──
     if packages:
         pkg_lines = "\n".join(
-            f"**{i+1}.** `{p['name']}` — {p['duration']} — {p['type']} — {p['price']}"
-            for i, p in enumerate(packages)
+            f"**{idx+1}.** `{p['name']}` — {p['duration']} — {p['type']} — {p['price']}"
+            for idx, p in enumerate(packages)
         )
     else:
         pkg_lines = "*No packages yet.*"
-
     embed.add_field(name="📦 Packages", value=pkg_lines, inline=False)
-    embed.add_field(name="💳 Payment Methods", value=(
-        f"{'✅' if pm.get('qris') else '❌'} QRIS\n"
-        f"{'✅' if pm.get('bank') else '❌'} Bank Transfer\n"
-        f"{'✅' if pm.get('ewallet') else '❌'} E-Wallet"
-    ), inline=False)
+
+    # ── Payment Methods (with details) ──
+    pay_lines = []
+    for key, data in pm.items():
+        if not isinstance(data, dict):
+            continue
+        status = "✅" if data.get("enabled") else "❌"
+        if key == "qris":
+            detail = data.get("info") or data.get("image_url") or "*(no detail set)*"
+            pay_lines.append(f"{status} **QRIS** — {detail[:60]}")
+        elif key == "bank":
+            bn  = data.get("bank_name") or "-"
+            an  = data.get("account_number") or "-"
+            anm = data.get("account_name") or "-"
+            pay_lines.append(f"{status} **Bank** — {bn} · `{an}` a/n {anm}")
+        elif key == "ewallet":
+            etype = data.get("type") or "-"
+            num   = data.get("number") or "-"
+            pay_lines.append(f"{status} **E-Wallet** ({etype}) — `{num}`")
+    embed.add_field(name="💳 Payment Methods", value="\n".join(pay_lines) or "*(none)*", inline=False)
+
+    # ── Premium-locked commands ──
+    embed.add_field(
+        name="🔒 Premium-Locked Commands",
+        value=", ".join(f"`{c}`" for c in pc) if pc else "*(none locked)*",
+        inline=False
+    )
+
+    # ── Premium users ──
+    embed.add_field(
+        name="👑 Premium Users",
+        value=", ".join(f"`{uid}`" for uid in pu[:10]) + ("…" if len(pu) > 10 else "") if pu else "*(none)*",
+        inline=False
+    )
     return embed
 
 
@@ -1120,14 +1316,13 @@ class PremiumManagerView(discord.ui.View):
     def check_owner(self, i: discord.Interaction) -> bool:
         return i.user.id == self.owner_id
 
-    # ── ADD PACKAGE ───────────────────────────
+    # ── ROW 0: Package management ─────────────────────────────
     @discord.ui.button(label="➕ Add Package", style=discord.ButtonStyle.success, row=0)
     async def add_package(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(AddPackageModal())
 
-    # ── REMOVE PACKAGE ────────────────────────
     @discord.ui.button(label="🗑️ Remove Package", style=discord.ButtonStyle.danger, row=0)
     async def remove_package(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
@@ -1137,35 +1332,74 @@ class PremiumManagerView(discord.ui.View):
             return await i.response.send_message(embed=error_embed("No packages to remove."), ephemeral=True)
         await i.response.send_modal(RemovePackageModal())
 
-    # ── TOGGLE QRIS ───────────────────────────
+    # ── ROW 1: Toggle payment methods ────────────────────────
     @discord.ui.button(label="QRIS 🔄", style=discord.ButtonStyle.secondary, row=1)
     async def toggle_qris(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
-        cfg["payment_methods"]["qris"] = not cfg["payment_methods"].get("qris", True)
+        pm = cfg["payment_methods"]["qris"]
+        pm["enabled"] = not pm.get("enabled", True)
         save_config(cfg)
         await i.response.edit_message(embed=build_premium_embed(), view=self)
 
-    # ── TOGGLE BANK ───────────────────────────
     @discord.ui.button(label="Bank 🔄", style=discord.ButtonStyle.secondary, row=1)
     async def toggle_bank(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
-        cfg["payment_methods"]["bank"] = not cfg["payment_methods"].get("bank", True)
+        pm = cfg["payment_methods"]["bank"]
+        pm["enabled"] = not pm.get("enabled", True)
         save_config(cfg)
         await i.response.edit_message(embed=build_premium_embed(), view=self)
 
-    # ── TOGGLE EWALLET ────────────────────────
     @discord.ui.button(label="E-Wallet 🔄", style=discord.ButtonStyle.secondary, row=1)
     async def toggle_ewallet(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
-        cfg["payment_methods"]["ewallet"] = not cfg["payment_methods"].get("ewallet", True)
+        pm = cfg["payment_methods"]["ewallet"]
+        pm["enabled"] = not pm.get("enabled", True)
         save_config(cfg)
         await i.response.edit_message(embed=build_premium_embed(), view=self)
 
-    # ── REFRESH ───────────────────────────────
-    @discord.ui.button(label="🔃 Refresh", style=discord.ButtonStyle.primary, row=2)
+    # ── ROW 2: Set payment details ────────────────────────────
+    @discord.ui.button(label="📷 Set QRIS", style=discord.ButtonStyle.primary, row=2)
+    async def set_qris(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(SetQRISModal())
+
+    @discord.ui.button(label="🏦 Set Bank", style=discord.ButtonStyle.primary, row=2)
+    async def set_bank(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(SetBankModal())
+
+    @discord.ui.button(label="📱 Set E-Wallet", style=discord.ButtonStyle.primary, row=2)
+    async def set_ewallet(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(SetEWalletModal())
+
+    # ── ROW 3: Command lock + premium users ───────────────────
+    @discord.ui.button(label="🔒 Lock Command", style=discord.ButtonStyle.danger, row=3)
+    async def lock_command(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(LockCommandModal())
+
+    @discord.ui.button(label="🔓 Unlock Command", style=discord.ButtonStyle.success, row=3)
+    async def unlock_command(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(UnlockCommandModal())
+
+    @discord.ui.button(label="👤 Add Premium User", style=discord.ButtonStyle.secondary, row=3)
+    async def add_premium_user(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(AddPremiumUserModal())
+
+    # ── ROW 4: Refresh ────────────────────────────────────────
+    @discord.ui.button(label="🔃 Refresh", style=discord.ButtonStyle.primary, row=4)
     async def refresh(self, i: discord.Interaction, _btn: discord.ui.Button):
         await i.response.edit_message(embed=build_premium_embed(), view=self)
 
@@ -1205,6 +1439,116 @@ class RemovePackageModal(discord.ui.Modal, title="🗑️ Remove Premium Package
                 embed=error_embed(f"Package `{self.pkg_name.value}` not found."), ephemeral=True)
 
 
+# ── Payment detail modals ─────────────────────────────────────────────────
+
+class SetQRISModal(discord.ui.Modal, title="📷 Set QRIS Details"):
+    image_url = discord.ui.TextInput(
+        label="QRIS Image URL", placeholder="https://... (link to QR image)", max_length=300, required=False)
+    info = discord.ui.TextInput(
+        label="Info / Description", placeholder="e.g. Scan QR → confirm Rp amount",
+        max_length=100, required=False)
+
+    async def on_submit(self, i: discord.Interaction):
+        cfg["payment_methods"]["qris"]["image_url"] = self.image_url.value.strip()
+        cfg["payment_methods"]["qris"]["info"]      = self.info.value.strip()
+        save_config(cfg)
+        await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
+
+
+class SetBankModal(discord.ui.Modal, title="🏦 Set Bank Transfer Details"):
+    bank_name      = discord.ui.TextInput(label="Nama Bank",      placeholder="e.g. BCA / Mandiri", max_length=50)
+    account_number = discord.ui.TextInput(label="Nomor Rekening", placeholder="e.g. 1234567890",   max_length=30)
+    account_name   = discord.ui.TextInput(label="Atas Nama",      placeholder="e.g. John Doe",     max_length=60)
+
+    async def on_submit(self, i: discord.Interaction):
+        cfg["payment_methods"]["bank"]["bank_name"]      = self.bank_name.value.strip()
+        cfg["payment_methods"]["bank"]["account_number"] = self.account_number.value.strip()
+        cfg["payment_methods"]["bank"]["account_name"]   = self.account_name.value.strip()
+        save_config(cfg)
+        await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
+
+
+class SetEWalletModal(discord.ui.Modal, title="📱 Set E-Wallet Details"):
+    etype  = discord.ui.TextInput(label="Tipe E-Wallet", placeholder="e.g. GoPay / OVO / Dana / ShopeePay", max_length=50)
+    number = discord.ui.TextInput(label="Nomor",         placeholder="e.g. 08123456789",                    max_length=30)
+
+    async def on_submit(self, i: discord.Interaction):
+        cfg["payment_methods"]["ewallet"]["type"]   = self.etype.value.strip()
+        cfg["payment_methods"]["ewallet"]["number"] = self.number.value.strip()
+        save_config(cfg)
+        await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
+
+
+# ── Command lock modals ───────────────────────────────────────────────────
+
+class LockCommandModal(discord.ui.Modal, title="🔒 Lock Command (Premium Only)"):
+    cmd_name = discord.ui.TextInput(
+        label="Command Name",
+        placeholder="e.g. kick  OR  ticket setup  OR  event create",
+        max_length=60
+    )
+
+    async def on_submit(self, i: discord.Interaction):
+        name = self.cmd_name.value.strip().lower()
+        pc   = cfg.setdefault("premium_commands", [])
+        if name in pc:
+            await i.response.send_message(
+                embed=error_embed(f"`{name}` is already premium-locked."), ephemeral=True)
+            return
+        pc.append(name)
+        save_config(cfg)
+        # Re-sync slash commands to show 💎 label
+        asyncio.create_task(apply_premium_labels())
+        await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
+
+
+class UnlockCommandModal(discord.ui.Modal, title="🔓 Unlock Command"):
+    cmd_name = discord.ui.TextInput(
+        label="Command Name to Unlock",
+        placeholder="Exact name as shown in Premium-Locked list",
+        max_length=60
+    )
+
+    async def on_submit(self, i: discord.Interaction):
+        name = self.cmd_name.value.strip().lower()
+        pc   = cfg.get("premium_commands", [])
+        if name not in pc:
+            await i.response.send_message(
+                embed=error_embed(f"`{name}` is not premium-locked."), ephemeral=True)
+            return
+        cfg["premium_commands"] = [c for c in pc if c != name]
+        save_config(cfg)
+        asyncio.create_task(apply_premium_labels())
+        await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
+
+
+class AddPremiumUserModal(discord.ui.Modal, title="👤 Add / Remove Premium User"):
+    user_id  = discord.ui.TextInput(label="User ID",      placeholder="Discord user ID (numbers only)", max_length=20)
+    action   = discord.ui.TextInput(label="Action",       placeholder="add  OR  remove",                max_length=6)
+
+    async def on_submit(self, i: discord.Interaction):
+        try:
+            uid = int(self.user_id.value.strip())
+        except ValueError:
+            return await i.response.send_message(embed=error_embed("Invalid user ID."), ephemeral=True)
+        act = self.action.value.strip().lower()
+        pu  = cfg.setdefault("premium_users", [])
+        if act == "add":
+            if uid in pu:
+                return await i.response.send_message(embed=error_embed("User already has premium."), ephemeral=True)
+            pu.append(uid)
+            save_config(cfg)
+            await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
+        elif act == "remove":
+            if uid not in pu:
+                return await i.response.send_message(embed=error_embed("User not in premium list."), ephemeral=True)
+            cfg["premium_users"] = [u for u in pu if u != uid]
+            save_config(cfg)
+            await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
+        else:
+            await i.response.send_message(embed=error_embed("Action must be `add` or `remove`."), ephemeral=True)
+
+
 @bot.command(name="premium")
 @is_owner()
 async def pfx_premium(ctx: commands.Context):
@@ -1216,57 +1560,204 @@ async def pfx_premium(ctx: commands.Context):
 # ── MAINTENANCE BROADCAST (OWNER PREFIX)
 # ─────────────────────────────────────────────
 
+class MaintenanceBroadcastView(discord.ui.View):
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+
+    def check_owner(self, i: discord.Interaction) -> bool:
+        return i.user.id == self.owner_id
+
+    @discord.ui.button(label="📝 Compose Broadcast", style=discord.ButtonStyle.primary, row=0)
+    async def compose(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(MaintenanceModal(self.owner_id))
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, row=0)
+    async def cancel(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.edit_message(
+            embed=info_embed("🚫 Cancelled", "Maintenance broadcast manager closed."), view=None)
+
+
+class MaintenanceModal(discord.ui.Modal, title="📢 Compose Maintenance Broadcast"):
+    def __init__(self, owner_id: int):
+        super().__init__()
+        self.owner_id = owner_id
+
+    title_input = discord.ui.TextInput(
+        label="Title", placeholder="e.g. Scheduled Maintenance",
+        max_length=100, default="🔧 Maintenance Notice")
+    description = discord.ui.TextInput(
+        label="Message", style=discord.TextStyle.paragraph,
+        placeholder="Describe the maintenance...", max_length=1000,
+        default="The bot is undergoing scheduled maintenance.")
+    btn_label = discord.ui.TextInput(
+        label="Button Label", placeholder="e.g. Status Page",
+        max_length=50, default="Status Page", required=False)
+    btn_url = discord.ui.TextInput(
+        label="Button URL", placeholder="https://status.joycannot.xyz",
+        max_length=200, default="https://status.joycannot.xyz", required=False)
+
+    async def on_submit(self, i: discord.Interaction):
+        preview = base_embed(f"📢 {self.title_input.value}", self.description.value, color=0xF59E0B)
+        preview.add_field(name="📊 Target Servers", value=str(len(bot.guilds)), inline=True)
+        preview.add_field(name="🔘 Button", value=self.btn_label.value or "Status Page", inline=True)
+        preview.set_footer(text="Preview — confirm below to broadcast")
+
+        view = MaintenanceConfirmView(
+            title      = self.title_input.value,
+            description= self.description.value,
+            btn_label  = self.btn_label.value or "Status Page",
+            btn_url    = self.btn_url.value   or "https://status.joycannot.xyz",
+            owner_id   = self.owner_id,
+        )
+        await i.response.send_message(embed=preview, view=view, ephemeral=False)
+
+
+class MaintenanceConfirmView(discord.ui.View):
+    def __init__(self, title: str, description: str, btn_label: str, btn_url: str, owner_id: int):
+        super().__init__(timeout=120)
+        self.title       = title
+        self.description = description
+        self.btn_label   = btn_label
+        self.btn_url     = btn_url
+        self.owner_id    = owner_id
+
+    @discord.ui.button(label="✅ Broadcast Now", style=discord.ButtonStyle.success, row=0)
+    async def confirm(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if i.user.id != self.owner_id:
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.edit_message(
+            embed=info_embed("📤 Broadcasting...", f"Sending to **{len(bot.guilds)}** servers..."),
+            view=None)
+
+        broadcast_embed = base_embed(f"📢 {self.title}", self.description, color=0xF59E0B)
+        broadcast_embed.add_field(name="Sent by", value=str(i.user), inline=True)
+        broadcast_embed.add_field(name="Time",
+            value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=True)
+
+        btn_view = discord.ui.View()
+        if self.btn_url.startswith("http"):
+            btn_view.add_item(discord.ui.Button(
+                label=self.btn_label, url=self.btn_url, style=discord.ButtonStyle.link))
+
+        ok, fail = 0, 0
+        for guild in bot.guilds:
+            gc = guild_cfg(cfg, guild.id)
+            ch = guild.get_channel(gc.get("main_channel") or 0)
+            if not ch:
+                ch = guild.system_channel
+            if not ch:
+                for c in guild.text_channels:
+                    if c.permissions_for(guild.me).send_messages:
+                        ch = c
+                        break
+            if ch:
+                try:
+                    await ch.send(embed=broadcast_embed, view=btn_view)
+                    ok += 1
+                except Exception:
+                    fail += 1
+            else:
+                fail += 1
+            await asyncio.sleep(0.5)
+
+        result = success_embed(f"Broadcast complete!\n✅ Success: **{ok}** | ❌ Failed: **{fail}**")
+        await i.edit_original_response(embed=result)
+
+    @discord.ui.button(label="✏️ Edit", style=discord.ButtonStyle.secondary, row=0)
+    async def edit(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if i.user.id != self.owner_id:
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(MaintenanceModal(self.owner_id))
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, row=0)
+    async def cancel(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if i.user.id != self.owner_id:
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.edit_message(embed=info_embed("🚫 Cancelled", "Broadcast cancelled."), view=None)
+
+
 @bot.command(name="maintenance")
 @is_owner()
-async def pfx_maintenance(ctx: commands.Context, *, args: str = ""):
-    """!Joy maintenance <title> | <description> | <button_label> | <button_url>"""
-    parts       = [p.strip() for p in args.split("|")]
-    title       = parts[0] if len(parts) > 0 else "🔧 Maintenance Notice"
-    description = parts[1] if len(parts) > 1 else "The bot is undergoing scheduled maintenance."
-    btn_label   = parts[2] if len(parts) > 2 else "Status Page"
-    btn_url     = parts[3] if len(parts) > 3 else "https://status.joycannot.xyz"
+async def pfx_maintenance(ctx: commands.Context):
+    """!Joy maintenance — Opens the interactive Maintenance Broadcast manager (owner only)."""
+    embed = base_embed("📢 Maintenance Broadcast Manager",
+        "Use the button below to compose and preview your maintenance message "
+        "before broadcasting it to all servers.")
+    embed.add_field(name="📊 Connected Servers", value=str(len(bot.guilds)), inline=True)
+    embed.add_field(name="📌 Note",
+        value="The message will be sent to the configured `main_channel` of each server.", inline=False)
+    await ctx.send(embed=embed, view=MaintenanceBroadcastView(ctx.author.id))
 
-    embed = base_embed(f"📢 {title}", description, color=0xF59E0B)
-    embed.add_field(name="Sent by", value=str(ctx.author), inline=True)
-    embed.add_field(name="Time", value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=True)
 
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label=btn_label, url=btn_url, style=discord.ButtonStyle.link))
+class SetChannelModal(discord.ui.Modal, title="📌 Set Main Channel"):
+    guild_id_input   = discord.ui.TextInput(label="Guild ID",   placeholder="Right-click server → Copy ID", max_length=20)
+    channel_id_input = discord.ui.TextInput(label="Channel ID", placeholder="Right-click channel → Copy ID", max_length=20)
 
-    ok, fail = 0, 0
-    status_msg = await ctx.send(embed=info_embed("📤 Broadcasting...", f"Sending to **{len(bot.guilds)}** servers..."))
+    async def on_submit(self, i: discord.Interaction):
+        try:
+            gid = int(self.guild_id_input.value.strip())
+            cid = int(self.channel_id_input.value.strip())
+        except ValueError:
+            return await i.response.send_message(embed=error_embed("Both IDs must be valid numbers."), ephemeral=True)
+        guild_cfg(cfg, gid)["main_channel"] = cid
+        save_config(cfg)
+        guild_obj = bot.get_guild(gid)
+        guild_name = guild_obj.name if guild_obj else f"ID `{gid}`"
+        ch_obj = bot.get_channel(cid)
+        ch_name = ch_obj.mention if ch_obj else f"ID `{cid}`"
+        result = base_embed("📌 Main Channel Set",
+            f"**Server:** {guild_name}\n**Channel:** {ch_name}")
+        await i.response.edit_message(embed=result, view=None)
 
-    for guild in bot.guilds:
-        gc = guild_cfg(cfg, guild.id)
-        ch = guild.get_channel(gc.get("main_channel") or 0)
-        if not ch:
-            ch = guild.system_channel
-        if not ch:
-            for c in guild.text_channels:
-                if c.permissions_for(guild.me).send_messages:
-                    ch = c
-                    break
-        if ch:
-            try:
-                await ch.send(embed=embed, view=view)
-                ok += 1
-            except Exception:
-                fail += 1
-        else:
-            fail += 1
-        await asyncio.sleep(0.5)
 
-    await status_msg.edit(embed=success_embed(
-        f"Broadcast complete!\n✅ Success: **{ok}** | ❌ Failed: **{fail}**"))
+class SetChannelView(discord.ui.View):
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+
+    @discord.ui.button(label="📌 Set Channel", style=discord.ButtonStyle.primary, row=0)
+    async def set_channel(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if i.user.id != self.owner_id:
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(SetChannelModal())
+
+    @discord.ui.button(label="📋 List Servers", style=discord.ButtonStyle.secondary, row=0)
+    async def list_servers(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if i.user.id != self.owner_id:
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        lines = []
+        for g in bot.guilds[:20]:
+            gc      = guild_cfg(cfg, g.id)
+            main_ch = g.get_channel(gc.get("main_channel") or 0)
+            ch_str  = main_ch.mention if main_ch else "*(not set)*"
+            lines.append(f"**{g.name}** (`{g.id}`) → {ch_str}")
+        embed = base_embed("📋 Server Main Channels",
+            "\n".join(lines) or "No servers." +
+            (f"\n\n*Showing first 20 of {len(bot.guilds)}*" if len(bot.guilds) > 20 else ""))
+        await i.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.danger, row=0)
+    async def close(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if i.user.id != self.owner_id:
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.edit_message(embed=info_embed("🚫 Closed", "SetChannel manager closed."), view=None)
 
 
 @bot.command(name="setchannel")
 @is_owner()
-async def pfx_setchannel(ctx: commands.Context, guild_id: int, channel_id: int):
-    """!Joy setchannel <guild_id> <channel_id>"""
-    guild_cfg(cfg, guild_id)["main_channel"] = channel_id
-    save_config(cfg)
-    await ctx.send(embed=success_embed(f"Main channel for `{guild_id}` → `{channel_id}`."))
+async def pfx_setchannel(ctx: commands.Context):
+    """!Joy setchannel — Opens the interactive Set Channel manager (owner only)."""
+    embed = base_embed("📌 Set Main Channel",
+        "Set the main notification channel for any server the bot is in.\n"
+        "Click **Set Channel** and enter the Guild ID and Channel ID.")
+    embed.add_field(name="💡 Tip", value="Enable Developer Mode in Discord settings to copy IDs.", inline=False)
+    embed.add_field(name="📊 Connected Servers", value=str(len(bot.guilds)), inline=True)
+    await ctx.send(embed=embed, view=SetChannelView(ctx.author.id))
 
 
 # ─────────────────────────────────────────────
@@ -1288,7 +1779,15 @@ async def on_app_command_error(i: discord.Interaction, error: app_commands.AppCo
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     if isinstance(error, commands.CheckFailure):
-        await ctx.send(embed=error_embed("❌ Owner only command."))
+        cmd_name = ctx.command.qualified_name if ctx.command else None
+        if cmd_name and is_premium_command(cmd_name):
+            await ctx.send(embed=base_embed(
+                "💎 Premium Required",
+                f"The command `{cmd_name}` requires **Premium** access.\n"
+                "Use `/premium info` to see available packages.",
+                color=0xF59E0B))
+        else:
+            await ctx.send(embed=error_embed("❌ Owner only command."))
     elif isinstance(error, commands.CommandNotFound):
         pass  # Silently ignore unknown cmds
     elif isinstance(error, commands.MissingRequiredArgument):
