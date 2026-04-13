@@ -700,67 +700,195 @@ async def do_help(reply_fn):
 
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
+#  AUTOCOMPLETE CALLBACKS
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
+
+async def autocomplete_lang(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for language codes."""
+    return [
+        app_commands.Choice(name=f"{code} — {name}", value=code)
+        for code, name in LANGUAGES.items()
+        if current.lower() in code.lower() or current.lower() in name.lower()
+    ][:25]
+
+async def autocomplete_package(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for premium package names."""
+    packages = cfg.get("premium_packages", [])
+    return [
+        app_commands.Choice(
+            name=f"{p['name']} — {p.get('duration','?')} — {p.get('price','?')}",
+            value=p["name"]
+        )
+        for p in packages
+        if current.lower() in p["name"].lower()
+    ][:25]
+
+async def autocomplete_timeout_minutes(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[int]]:
+    """Autocomplete common timeout durations."""
+    presets = [
+        (5,    "5 minutes"),
+        (10,   "10 minutes"),
+        (30,   "30 minutes"),
+        (60,   "1 hour"),
+        (120,  "2 hours"),
+        (360,  "6 hours"),
+        (720,  "12 hours"),
+        (1440, "1 day"),
+        (4320, "3 days"),
+        (10080,"7 days"),
+    ]
+    results = []
+    for val, label in presets:
+        if not current or current in str(val) or current.lower() in label.lower():
+            results.append(app_commands.Choice(name=label, value=val))
+    return results[:25]
+
+async def autocomplete_warn_reason(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete common warn reasons."""
+    reasons = [
+        "Spam",
+        "Toxic behaviour",
+        "Hate speech",
+        "NSFW content",
+        "Self-promotion / advertising",
+        "Flood / mass ping",
+        "Inappropriate nickname",
+        "Off-topic",
+        "Misinformation",
+        "Evading mute/ban",
+    ]
+    return [
+        app_commands.Choice(name=r, value=r)
+        for r in reasons
+        if current.lower() in r.lower()
+    ][:25]
+
+async def autocomplete_ban_reason(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete common ban reasons."""
+    reasons = [
+        "Hate speech / discrimination",
+        "Raiding / server disruption",
+        "Doxxing / sharing personal info",
+        "Extreme harassment",
+        "CSAM or illegal content",
+        "Bot / selfbot usage",
+        "Scamming members",
+        "Evading previous ban",
+        "Threats of violence",
+        "Repeated rule violations",
+    ]
+    return [
+        app_commands.Choice(name=r, value=r)
+        for r in reasons
+        if current.lower() in r.lower()
+    ][:25]
+
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  SLASH COMMANDS
 # ══════════════════════════════════════════
 # ─────────────────────────────────────────────
 
 # ── MODERATION ────────────────────────────────
 
-@bot.tree.command(name="kick", description="Kick a member from the server.")
-@app_commands.describe(member="Member to kick", reason="Reason")
+@bot.tree.command(name="kick", description="Kick a member from the server. Requires Kick Members permission.")
+@app_commands.describe(
+    member="The member you want to kick from this server",
+    reason="Reason for the kick (shown in audit log)"
+)
 async def slash_kick(i: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
     await do_kick(i.guild, i.user, member, reason, i.response.send_message)
 
-@bot.tree.command(name="ban", description="Ban a member from the server.")
-@app_commands.describe(member="Member to ban", reason="Reason")
+@bot.tree.command(name="ban", description="Permanently ban a member. Requires Ban Members permission.")
+@app_commands.describe(
+    member="The member you want to ban from this server",
+    reason="Reason for the ban (shown in audit log & DM'd to user)"
+)
+@app_commands.autocomplete(reason=autocomplete_ban_reason)
 async def slash_ban(i: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
     await do_ban(i.guild, i.user, member, reason, i.response.send_message)
 
-@bot.tree.command(name="timeout", description="Timeout a member.")
-@app_commands.describe(member="Member", minutes="Duration in minutes", reason="Reason")
+@bot.tree.command(name="timeout", description="Temporarily mute a member. Requires Moderate Members permission.")
+@app_commands.describe(
+    member="The member to put in timeout",
+    minutes="Duration of the timeout (pick a preset or type a custom value in minutes)",
+    reason="Reason for the timeout"
+)
+@app_commands.autocomplete(minutes=autocomplete_timeout_minutes)
 async def slash_timeout(i: discord.Interaction, member: discord.Member, minutes: int, reason: str = "No reason provided."):
     await do_timeout(i.guild, i.user, member, minutes, reason, i.response.send_message)
 
-@bot.tree.command(name="warn", description="Warn a member.")
-@app_commands.describe(member="Member", reason="Reason")
+@bot.tree.command(name="warn", description="Issue a formal warning to a member. Warnings are logged.")
+@app_commands.describe(
+    member="The member to warn",
+    reason="Reason for the warning (DM'd to the member automatically)"
+)
+@app_commands.autocomplete(reason=autocomplete_warn_reason)
 async def slash_warn(i: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
     await do_warn(i.guild, i.user, member, reason, i.response.send_message)
 
-@bot.tree.command(name="addrole", description="Add a role to a member.")
-@app_commands.describe(member="Target member", role="Role to add")
+@bot.tree.command(name="addrole", description="Assign a role to a member. Requires Manage Roles permission.")
+@app_commands.describe(
+    member="The member who will receive the role",
+    role="The role to assign (must be lower than the bot's highest role)"
+)
 async def slash_addrole(i: discord.Interaction, member: discord.Member, role: discord.Role):
     await do_addrole(i.guild, i.user, member, role, i.response.send_message)
 
-@bot.tree.command(name="removerole", description="Remove a role from a member.")
-@app_commands.describe(member="Target member", role="Role to remove")
+@bot.tree.command(name="removerole", description="Remove a role from a member. Requires Manage Roles permission.")
+@app_commands.describe(
+    member="The member to remove the role from",
+    role="The role to remove from the member"
+)
 async def slash_removerole(i: discord.Interaction, member: discord.Member, role: discord.Role):
     await do_removerole(i.guild, i.user, member, role, i.response.send_message)
 
-@bot.tree.command(name="move", description="Move a member to a voice channel.")
-@app_commands.describe(member="Member", channel="Target voice channel")
+@bot.tree.command(name="move", description="Move a member to a different voice channel. Requires Move Members.")
+@app_commands.describe(
+    member="The member currently in a voice channel",
+    channel="The destination voice channel"
+)
 async def slash_move(i: discord.Interaction, member: discord.Member, channel: discord.VoiceChannel):
     await do_move(i.guild, i.user, member, channel, i.response.send_message)
 
-@bot.tree.command(name="userinfo", description="Display info about a member.")
-@app_commands.describe(member="Member to inspect")
+@bot.tree.command(name="userinfo", description="View detailed info about a member: roles, warnings, join date, and more.")
+@app_commands.describe(
+    member="Member to inspect (leave blank to view your own info)"
+)
 async def slash_userinfo(i: discord.Interaction, member: Optional[discord.Member] = None):
     await do_userinfo(i.guild, member or i.user, i.response.send_message)
 
-@bot.tree.command(name="avatar", description="Show a member's avatar.")
-@app_commands.describe(member="Member")
+@bot.tree.command(name="avatar", description="Show a member's full-size avatar image.")
+@app_commands.describe(
+    member="Member whose avatar to display (leave blank for your own)"
+)
 async def slash_avatar(i: discord.Interaction, member: Optional[discord.Member] = None):
     await do_avatar(member or i.user, i.response.send_message)
 
-@bot.tree.command(name="ping", description="Check bot latency.")
+@bot.tree.command(name="ping", description="Check the bot's current websocket latency in milliseconds.")
 async def slash_ping(i: discord.Interaction):
     await do_ping(i.response.send_message)
 
-@bot.tree.command(name="help", description="Show all commands.")
+@bot.tree.command(name="help", description="Show all available commands with descriptions and premium status.")
 async def slash_help(i: discord.Interaction):
     await do_help(i.response.send_message)
 
-@bot.tree.command(name="addemoji", description="Add a custom emoji from URL.")
-@app_commands.describe(name="Emoji name", url="Image URL")
+@bot.tree.command(name="addemoji", description="Add a custom emoji to this server from an image URL. Requires Manage Emojis.")
+@app_commands.describe(
+    name="Name for the new emoji (letters, numbers, underscores only)",
+    url="Direct image URL (.png, .jpg, .gif) — max 256 KB"
+)
 async def slash_addemoji(i: discord.Interaction, name: str, url: str):
     if not i.user.guild_permissions.manage_emojis:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
@@ -777,10 +905,13 @@ async def slash_addemoji(i: discord.Interaction, name: str, url: str):
 
 # ── LANGUAGE ──────────────────────────────────
 
-lang_group = app_commands.Group(name="language", description="Language settings.")
+lang_group = app_commands.Group(name="language", description="Change or view the bot's language for this server.")
 
-@lang_group.command(name="set", description="Set bot language for this server.")
-@app_commands.describe(lang="Language code")
+@lang_group.command(name="set", description="Set the bot's response language for this server. Requires Manage Server.")
+@app_commands.describe(
+    lang="Language code — start typing to search (e.g. 'id' for Indonesian, 'en' for English)"
+)
+@app_commands.autocomplete(lang=autocomplete_lang)
 async def slash_lang_set(i: discord.Interaction, lang: str):
     if not i.user.guild_permissions.manage_guild:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
@@ -791,7 +922,7 @@ async def slash_lang_set(i: discord.Interaction, lang: str):
     save_config(cfg)
     await i.response.send_message(embed=success_embed(t(cfg, i.guild.id, "lang_set", lang=LANGUAGES[lang])))
 
-@lang_group.command(name="list", description="List supported languages.")
+@lang_group.command(name="list", description="Show all 8 supported languages and highlight the currently active one.")
 async def slash_lang_list(i: discord.Interaction):
     cur   = guild_cfg(cfg, i.guild.id).get("language", "en")
     lines = "\n".join(f"{'✅' if k==cur else '◽'} `{k}` — {v}" for k, v in LANGUAGES.items())
@@ -801,10 +932,14 @@ bot.tree.add_command(lang_group)
 
 # ── TICKET ────────────────────────────────────
 
-ticket_group = app_commands.Group(name="ticket", description="Ticket system.")
+ticket_group = app_commands.Group(name="ticket", description="Manage the server's ticket support system.")
 
-@ticket_group.command(name="setup", description="Configure the ticket system.")
-@app_commands.describe(category="Category for tickets", log_channel="Log channel", whitelist_role="Role allowed to open tickets")
+@ticket_group.command(name="setup", description="Configure the ticket system: category, log channel, and optional role restriction.")
+@app_commands.describe(
+    category="The category where new ticket channels will be created",
+    log_channel="Channel where ticket open/close events are logged",
+    whitelist_role="Only members with this role can open tickets (leave blank = everyone)"
+)
 async def slash_ticket_setup(
     i: discord.Interaction,
     category: discord.CategoryChannel,
@@ -825,8 +960,12 @@ async def slash_ticket_setup(
         f"**Whitelist:** {whitelist_role.mention if whitelist_role else 'Everyone'}"
     ))
 
-@ticket_group.command(name="panel", description="Send a ticket panel.")
-@app_commands.describe(title="Embed title", description="Embed description", button_label="Button label")
+@ticket_group.command(name="panel", description="Send a ticket panel embed with an 'Open Ticket' button to this channel.")
+@app_commands.describe(
+    title="Title shown on the ticket panel embed",
+    description="Description text shown on the ticket panel embed",
+    button_label="Label for the button users click to open a ticket"
+)
 async def slash_ticket_panel(
     i: discord.Interaction,
     title: str = "🎫 Support Tickets",
@@ -852,7 +991,7 @@ async def slash_ticket_panel(
     gc["ticket"]["panels"].append({"channel_id": i.channel.id, "title": title})
     save_config(cfg)
 
-@ticket_group.command(name="close", description="Close the current ticket.")
+@ticket_group.command(name="close", description="Close and delete this ticket channel. Only usable inside a ticket.")
 async def slash_ticket_close(i: discord.Interaction):
     gc = guild_cfg(cfg, i.guild.id)
     for uid, ch_id in list(gc["active_tickets"].items()):
@@ -937,9 +1076,9 @@ async def handle_open_ticket(i: discord.Interaction):
 
 # ── PREMIUM (slash) ───────────────────────────
 
-premium_slash = app_commands.Group(name="premium", description="Premium packages.")
+premium_slash = app_commands.Group(name="premium", description="View and order JoyCannot Premium packages.")
 
-@premium_slash.command(name="info", description="View premium packages.")
+@premium_slash.command(name="info", description="View all available premium packages, prices, durations, and payment methods.")
 async def slash_premium_info(i: discord.Interaction):
     packages = cfg.get("premium_packages", [])
     if not packages:
@@ -973,8 +1112,12 @@ async def slash_premium_info(i: discord.Interaction):
         value="\n".join(pay_lines) if pay_lines else "No payment methods enabled.", inline=False)
     await i.response.send_message(embed=embed)
 
-@premium_slash.command(name="order", description="Order a premium package.")
-@app_commands.describe(package_name="Package name", payment="Payment method")
+@premium_slash.command(name="order", description="Order a premium package — pick your package and payment method to submit an order.")
+@app_commands.describe(
+    package_name="Name of the package to order (start typing to see available options)",
+    payment="Your preferred payment method"
+)
+@app_commands.autocomplete(package_name=autocomplete_package)
 @app_commands.choices(payment=[
     app_commands.Choice(name="QRIS",          value="qris"),
     app_commands.Choice(name="Bank Transfer", value="bank"),
@@ -1028,8 +1171,10 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
 bot.tree.add_command(premium_slash)
 
 # ── Set premium role per guild (admin slash) ──────────────────────────────
-@bot.tree.command(name="setpremiumrole", description="Set the role that grants premium access in this server.")
-@app_commands.describe(role="Role to treat as premium")
+@bot.tree.command(name="setpremiumrole", description="Set which role grants premium access in this server. Requires Manage Server.")
+@app_commands.describe(
+    role="The role that will have premium access (leave blank to clear the current premium role)"
+)
 async def slash_set_premium_role(i: discord.Interaction, role: Optional[discord.Role] = None):
     if not i.user.guild_permissions.manage_guild:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
@@ -1052,10 +1197,12 @@ async def slash_set_premium_role(i: discord.Interaction, role: Optional[discord.
 # ══════════════════════════════════════════
 # ─────────────────────────────────────────────
 
-event_group = app_commands.Group(name="event", description="Event announcement system.")
+event_group = app_commands.Group(name="event", description="Schedule and announce events with a live countdown.")
 
-@event_group.command(name="channel", description="Set the event announcement channel.")
-@app_commands.describe(channel="Announce channel")
+@event_group.command(name="channel", description="Set the channel where event announcements will be posted. Requires Manage Server.")
+@app_commands.describe(
+    channel="The text channel to use for event announcements and countdowns"
+)
 async def slash_event_channel(i: discord.Interaction, channel: discord.TextChannel):
     if not i.user.guild_permissions.manage_guild:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
@@ -1063,12 +1210,12 @@ async def slash_event_channel(i: discord.Interaction, channel: discord.TextChann
     save_config(cfg)
     await i.response.send_message(embed=success_embed(f"Announce channel set to {channel.mention}!"))
 
-@event_group.command(name="create", description="Schedule an event with live countdown.")
+@event_group.command(name="create", description="Schedule an event with a live countdown → auto-updates to LIVE → ENDED.")
 @app_commands.describe(
-    title="Event title",
-    name="Event name/topic",
-    start_time="Start time WIB (DD/MM/YYYY HH:MM)",
-    duration="Duration e.g. 1h, 30m, 1h30m"
+    title="Event title shown in the announcement embed (e.g. 'Community Game Night')",
+    name="Short event name or topic (e.g. 'Among Us Tournament')",
+    start_time="Start time in WIB — format: DD/MM/YYYY HH:MM (e.g. 25/12/2025 20:00)",
+    duration="How long the event runs — e.g. 1h, 30m, 1h30m, 2h"
 )
 async def slash_event_create(
     i: discord.Interaction,
