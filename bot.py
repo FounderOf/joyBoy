@@ -302,14 +302,53 @@ ORIGINAL_CMD_DESCRIPTIONS: dict[str, str] = {}
 
 # ── Subclass CommandTree — the ONLY correct way to add a global slash check ──
 class JoyCommandTree(app_commands.CommandTree):
+    @staticmethod
+    def _resolve_cmd_name(interaction: discord.Interaction) -> Optional[str]:
+        """
+        Resolve the qualified command name from raw interaction data.
+        We CANNOT use interaction.command here because discord.py hasn't
+        resolved it yet at the interaction_check stage — it would be None.
+        So we read directly from interaction.data instead.
+
+        Returns e.g. "kick", "ticket setup", "language set", or None.
+        """
+        data = getattr(interaction, "data", None)
+        if not data:
+            return None
+        # interaction type 1 = PING, 2 = APP_COMMAND (slash), 3 = MESSAGE_COMPONENT, 4 = AUTOCOMPLETE, 5 = MODAL
+        if interaction.type not in (
+            discord.InteractionType.application_command,
+            discord.InteractionType.autocomplete,
+        ):
+            return None
+        # Application command type: 1 = CHAT_INPUT (slash), 2 = USER, 3 = MESSAGE
+        if data.get("type", 1) != 1:
+            return None  # Only intercept slash commands
+
+        parts = [data.get("name", "")]
+        # Walk into sub-command / sub-command-group options
+        options = data.get("options", [])
+        while options:
+            opt = options[0]
+            # option type 1 = SUB_COMMAND, 2 = SUB_COMMAND_GROUP
+            if opt.get("type") in (1, 2):
+                parts.append(opt["name"])
+                options = opt.get("options", [])
+            else:
+                break
+        return " ".join(parts) if parts else None
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Global gate: block non-premium users from premium-locked commands."""
-        if not interaction.command:
-            return True
-        cmd_name = interaction.command.qualified_name  # e.g. "kick" or "ticket setup"
-        if not (cmd_name in cfg.get("premium_commands", [])):
-            return True
-        # Check premium access
+        """Global gate: block non-premium users from premium-locked slash commands."""
+        cmd_name = self._resolve_cmd_name(interaction)
+        if not cmd_name:
+            return True  # Not a slash command (button, modal, etc.) — always allow
+
+        premium_cmds = cfg.get("premium_commands", [])
+        if cmd_name not in premium_cmds:
+            return True  # Command not locked — allow
+
+        # ── Check premium access ──────────────────────────────────────────
         user = interaction.user
         if user.id in cfg.get("premium_users", []):
             return True
@@ -320,7 +359,8 @@ class JoyCommandTree(app_commands.CommandTree):
                 role = interaction.guild.get_role(rid)
                 if role and isinstance(user, discord.Member) and role in user.roles:
                     return True
-        # Blocked — send ephemeral notice
+
+        # ── Blocked — respond ephemeral ────────────────────────────────────
         try:
             await interaction.response.send_message(
                 embed=base_embed(
@@ -363,7 +403,12 @@ def is_premium_command(cmd_name: str) -> bool:
 
 async def apply_premium_labels():
     """
-    Update slash command descriptions to add/remove [💎] label, then re-sync.
+    Update slash command descriptions to add/remove [💎] label, then sync.
+
+    Strategy:
+    - Modify local command tree descriptions
+    - Sync per-guild first → instant effect in all current servers
+    - Then global sync → covers future servers the bot joins
     Always reads from ORIGINAL_CMD_DESCRIPTIONS so labels never stack.
     """
     premium_cmds = set(cfg.get("premium_commands", []))
@@ -372,7 +417,6 @@ async def apply_premium_labels():
         base_name = cmd.name
         orig = ORIGINAL_CMD_DESCRIPTIONS.get(base_name)
         if orig is None:
-            # Fallback: strip any existing label from current description
             orig = cmd.description.removeprefix("[💎] ")
             ORIGINAL_CMD_DESCRIPTIONS[base_name] = orig
         cmd.description = (f"[💎] {orig}"[:100] if base_name in premium_cmds else orig)
@@ -386,15 +430,29 @@ async def apply_premium_labels():
                     ORIGINAL_CMD_DESCRIPTIONS[sub_full] = sub_orig
                 sub.description = (f"[💎] {sub_orig}"[:100] if sub_full in premium_cmds else sub_orig)
 
-    # Small delay to avoid rate-limit when called right after another sync
+    # ── Per-guild sync (instant, no propagation delay) ──
+    guild_ok = guild_fail = 0
+    for guild in bot.guilds:
+        try:
+            await bot.tree.sync(guild=discord.Object(id=guild.id))
+            guild_ok += 1
+            await asyncio.sleep(0.3)   # avoid hitting rate limit
+        except discord.HTTPException:
+            guild_fail += 1
+        except Exception:
+            guild_fail += 1
+
+    logging.info(f"[Premium Labels] Guild sync done — ✅ {guild_ok} / ❌ {guild_fail}. Locked: {premium_cmds}")
+
+    # ── Global sync (covers new servers, may take ~1h to propagate) ──
     await asyncio.sleep(1)
     try:
         synced = await bot.tree.sync()
-        logging.info(f"[Premium Labels] Re-synced {len(synced)} commands. Locked: {premium_cmds}")
+        logging.info(f"[Premium Labels] Global sync — {len(synced)} commands.")
     except discord.HTTPException as e:
-        logging.error(f"[Premium Labels] Sync HTTP error: {e}")
+        logging.error(f"[Premium Labels] Global sync HTTP error: {e}")
     except Exception as e:
-        logging.error(f"[Premium Labels] Sync error: {e}")
+        logging.error(f"[Premium Labels] Global sync error: {e}")
 
 # Anti-spam tracker
 spam_tracker:      dict[int, dict[str, set]] = defaultdict(lambda: defaultdict(set))
@@ -449,18 +507,20 @@ async def on_ready():
                 sub_raw = sub.description.removeprefix("[💎] ")
                 ORIGINAL_CMD_DESCRIPTIONS[f"{cmd.name} {sub.name}"] = sub_raw
 
-    # First sync (clean state)
+    # ── Initial global sync ──
     try:
         synced = await bot.tree.sync()
-        print(f"[JoyCannot] Synced {len(synced)} slash command(s).")
+        print(f"[JoyCannot] Global sync: {len(synced)} command(s).")
     except Exception as e:
-        print(f"[JoyCannot] Sync error: {e}")
+        print(f"[JoyCannot] Global sync error: {e}")
 
-    # Re-apply premium labels saved from previous session AFTER first sync
+    # ── Re-apply saved premium labels immediately (per-guild for instant effect) ──
     if cfg.get("premium_commands"):
+        print("[JoyCannot] Applying premium labels...")
         await apply_premium_labels()
 
     cleanup_spam_cache.start()
+    print(f"[JoyCannot] Ready — {len(bot.guilds)} guild(s).")
 
 
 @bot.event
