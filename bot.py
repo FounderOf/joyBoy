@@ -394,21 +394,68 @@ def user_has_premium(guild: Optional[discord.Guild], user: discord.abc.User) -> 
         return True
     return False
 
-PREMIUM_NICK  = "JoyCannot Premium"
-DEFAULT_NICK  = None   # None = use bot's actual username, no override
+PREMIUM_NICK      = "JoyCannot Premium"
+PREMIUM_ROLE_NAME = "⭐ JoyCannot Premium"
+PREMIUM_ROLE_COLOR = discord.Color(0xF59E0B)   # amber/yellow
 
 async def set_guild_premium_nick(guild: discord.Guild, activate: bool):
     """
-    Set or clear the bot's nickname in a guild to reflect premium status.
-    activate=True  → nickname = 'JoyCannot Premium'
-    activate=False → nickname = None (resets to bot username)
+    Activate:
+      1. Create role '⭐ JoyCannot Premium' (yellow) if not exists
+      2. Assign it to the bot (above all other bot roles so color shows)
+      3. Set bot nickname to 'JoyCannot Premium'
+
+    Deactivate:
+      1. Remove the premium role from the bot
+      2. Delete the role from the server
+      3. Reset bot nickname to None (original username)
     """
+    me = guild.me
     try:
-        await guild.me.edit(nick=PREMIUM_NICK if activate else DEFAULT_NICK)
+        if activate:
+            # ── Find or create the premium role ──────────────────────────
+            role = discord.utils.get(guild.roles, name=PREMIUM_ROLE_NAME)
+            if not role:
+                role = await guild.create_role(
+                    name=PREMIUM_ROLE_NAME,
+                    color=PREMIUM_ROLE_COLOR,
+                    reason="JoyCannot Premium activation"
+                )
+
+            # ── Move role just below the bot's highest managed role ───────
+            try:
+                top_pos = max((r.position for r in me.roles if r.managed), default=1)
+                await role.edit(position=max(top_pos - 1, 1))
+            except Exception:
+                pass   # Position edit may fail in some configs — not critical
+
+            # ── Assign role to bot if not already ─────────────────────────
+            if role not in me.roles:
+                await me.add_roles(role, reason="JoyCannot Premium activation")
+
+            # ── Set nickname ───────────────────────────────────────────────
+            await me.edit(nick=PREMIUM_NICK)
+            logging.info(f"[Premium] Activated in {guild.name} — role + nick set.")
+
+        else:
+            # ── Remove & delete the premium role ──────────────────────────
+            role = discord.utils.get(guild.roles, name=PREMIUM_ROLE_NAME)
+            if role:
+                if role in me.roles:
+                    await me.remove_roles(role, reason="JoyCannot Premium deactivation")
+                try:
+                    await role.delete(reason="JoyCannot Premium deactivation")
+                except Exception:
+                    pass
+
+            # ── Reset nickname ─────────────────────────────────────────────
+            await me.edit(nick=None)
+            logging.info(f"[Premium] Deactivated in {guild.name} — role removed, nick reset.")
+
     except discord.Forbidden:
-        logging.warning(f"[NickSync] No permission to change nickname in {guild.name} ({guild.id})")
+        logging.warning(f"[Premium] Missing permissions in {guild.name} ({guild.id})")
     except Exception as e:
-        logging.error(f"[NickSync] Error in {guild.name}: {e}")
+        logging.error(f"[Premium] Error in {guild.name}: {e}")
 
 def is_premium_command(cmd_name: str) -> bool:
     return cmd_name in cfg.get("premium_commands", [])
