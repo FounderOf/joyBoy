@@ -1,10 +1,10 @@
 """
 JoyCannot Discord Bot
 Author: JoyCannot Team
-Version: 1.2.0
+Version: 1.3.0
 License: MIT
 
-Changes v1.2.0:
+Changes v1.3.0:
   - Payment methods now support real account details (QRIS URL/info, Bank rekening, E-Wallet number)
   - Premium command lock system: lock any command as 💎 PREMIUM via interactive UI
   - Premium label auto-applied to slash command descriptions after lock/unlock (re-sync)
@@ -12,8 +12,9 @@ Changes v1.2.0:
   - All owner/setup commands now use embed + button UI (maintenance, setchannel)
   - Maintenance broadcast: compose → preview → confirm flow with Edit/Cancel buttons
   - setchannel: modal-based input with server list view
-  - Added /setpremiumrole for server admins to set which role has premium access
-  - Global premium user list (owner can add/remove by user ID)
+  - Premium is per-user ID only (no per-server role exploit)
+  - Guild premium nickname: owner activates 'JoyCannot Premium' nickname per server
+  - Nickname auto-restored on bot restart for all activated guilds
 """
 
 import discord
@@ -52,6 +53,7 @@ def load_config() -> dict:
             "premium_packages": [],
             "premium_commands": [],   # list of command names locked to premium
             "premium_users":    [],   # global list of user IDs with premium access
+            "premium_guilds":   [],   # guild IDs with premium nickname activated
             "payment_methods": {
                 "qris":    {"enabled": True, "image_url": "", "info": ""},
                 "bank":    {"enabled": True, "bank_name": "", "account_number": "", "account_name": ""},
@@ -78,6 +80,7 @@ def load_config() -> dict:
         }
     data.setdefault("premium_commands", [])
     data.setdefault("premium_users",    [])
+    data.setdefault("premium_guilds",   [])
     save_config(data)
     return data
 
@@ -93,7 +96,6 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
             "language": "en",
             "main_channel": None,
             "announce_channel": None,
-            "premium_role_id": None,   # role ID that grants premium access in this guild
             "ticket": {
                 "category": None,
                 "log_channel": None,
@@ -104,9 +106,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
             "active_tickets": {}
         }
         save_config(cfg)
-    gc = cfg["guilds"][gid]
-    gc.setdefault("premium_role_id", None)
-    return gc
+    return cfg["guilds"][gid]
 
 # ─────────────────────────────────────────────
 # LANGUAGE SYSTEM
@@ -300,6 +300,10 @@ cfg = load_config()
 # Must be declared BEFORE CommandTree subclass uses it.
 ORIGINAL_CMD_DESCRIPTIONS: dict[str, str] = {}
 
+# ── Pending payment proof tracker ──
+# key: user_id (int) → value: dict with order info + asyncio.Event
+pending_proofs: dict[int, dict] = {}
+
 # ── Subclass CommandTree — the ONLY correct way to add a global slash check ──
 class JoyCommandTree(app_commands.CommandTree):
     @staticmethod
@@ -349,24 +353,17 @@ class JoyCommandTree(app_commands.CommandTree):
             return True  # Command not locked — allow
 
         # ── Check premium access ──────────────────────────────────────────
-        user = interaction.user
-        if user.id in cfg.get("premium_users", []):
+        if user_has_premium(interaction.guild, interaction.user):
             return True
-        if interaction.guild:
-            gc  = guild_cfg(cfg, interaction.guild.id)
-            rid = gc.get("premium_role_id")
-            if rid:
-                role = interaction.guild.get_role(rid)
-                if role and isinstance(user, discord.Member) and role in user.roles:
-                    return True
 
         # ── Blocked — respond ephemeral ────────────────────────────────────
         try:
             await interaction.response.send_message(
                 embed=base_embed(
                     "💎 Premium Required",
-                    f"The command `/{cmd_name}` requires **Premium** access.\n"
-                    "Use `/premium info` to see available packages and how to upgrade.",
+                    f"The command `/{cmd_name}` is only available for **Premium** servers or users.\n\n"
+                    "📦 Use `/premium info` to see available packages.\n"
+                    "📩 Use `/premium order` to subscribe.",
                     color=0xF59E0B),
                 ephemeral=True)
         except discord.InteractionResponded:
@@ -386,17 +383,32 @@ bot = commands.Bot(
 # ─────────────────────────────────────────────
 
 def user_has_premium(guild: Optional[discord.Guild], user: discord.abc.User) -> bool:
-    """Return True if user has premium access (global list OR guild premium role)."""
+    """
+    Return True if:
+    - User ID is in the global premium_users list (individual premium), OR
+    - The guild they're in is in premium_guilds (server-wide premium)
+    """
     if user.id in cfg.get("premium_users", []):
         return True
-    if guild:
-        gc  = guild_cfg(cfg, guild.id)
-        rid = gc.get("premium_role_id")
-        if rid:
-            role = guild.get_role(rid)
-            if role and isinstance(user, discord.Member) and role in user.roles:
-                return True
+    if guild and guild.id in cfg.get("premium_guilds", []):
+        return True
     return False
+
+PREMIUM_NICK  = "JoyCannot Premium"
+DEFAULT_NICK  = None   # None = use bot's actual username, no override
+
+async def set_guild_premium_nick(guild: discord.Guild, activate: bool):
+    """
+    Set or clear the bot's nickname in a guild to reflect premium status.
+    activate=True  → nickname = 'JoyCannot Premium'
+    activate=False → nickname = None (resets to bot username)
+    """
+    try:
+        await guild.me.edit(nick=PREMIUM_NICK if activate else DEFAULT_NICK)
+    except discord.Forbidden:
+        logging.warning(f"[NickSync] No permission to change nickname in {guild.name} ({guild.id})")
+    except Exception as e:
+        logging.error(f"[NickSync] Error in {guild.name}: {e}")
 
 def is_premium_command(cmd_name: str) -> bool:
     return cmd_name in cfg.get("premium_commands", [])
@@ -479,15 +491,8 @@ async def global_prefix_premium_check(ctx: commands.Context) -> bool:
         return True
     if cmd_name not in cfg.get("premium_commands", []):
         return True
-    if ctx.author.id in cfg.get("premium_users", []):
+    if user_has_premium(ctx.guild, ctx.author):
         return True
-    if ctx.guild:
-        gc  = guild_cfg(cfg, ctx.guild.id)
-        rid = gc.get("premium_role_id")
-        if rid:
-            role = ctx.guild.get_role(rid)
-            if role and isinstance(ctx.author, discord.Member) and role in ctx.author.roles:
-                return True
     return False  # → triggers CheckFailure → on_command_error
 
 # ─────────────────────────────────────────────
@@ -521,6 +526,15 @@ async def on_ready():
 
     cleanup_spam_cache.start()
     print(f"[JoyCannot] Ready — {len(bot.guilds)} guild(s).")
+
+    # ── Restore premium nicknames for all activated guilds ──
+    premium_guilds = set(cfg.get("premium_guilds", []))
+    if premium_guilds:
+        print(f"[JoyCannot] Restoring premium nicknames for {len(premium_guilds)} guild(s)...")
+        for guild in bot.guilds:
+            if guild.id in premium_guilds:
+                await set_guild_premium_nick(guild, activate=True)
+                await asyncio.sleep(0.5)
 
 
 @bot.event
@@ -751,7 +765,7 @@ async def do_help(reply_fn):
         f"{lbl('language set')} · {lbl('language list')}"
     ), inline=False)
     embed.add_field(name="💎 Premium", value=(
-        f"{lbl('premium info')} · {lbl('premium order')} · {lbl('premium setpremiumrole')}"
+        f"{lbl('premium info')} · {lbl('premium order')}"
     ), inline=False)
     embed.add_field(name="👑 Owner Only (prefix)", value=(
         "`!Joy maintenance` · `!Joy premium` · `!Joy setchannel`"
@@ -1191,11 +1205,11 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
     if not (isinstance(pm_entry, dict) and pm_entry.get("enabled")):
         return await i.response.send_message(embed=error_embed("Payment method not available."), ephemeral=True)
 
-    # Build payment detail string
+    # ── Build payment detail string ──────────────────────────────────────
     if payment == "qris":
-        pay_detail = pm_entry.get("info") or "Contact owner for QRIS details."
+        pay_detail = pm_entry.get("info") or "Scan QRIS di bawah."
         if pm_entry.get("image_url"):
-            pay_detail += f"\n[Scan QRIS]({pm_entry['image_url']})"
+            pay_detail += f"\n[📷 Lihat QRIS]({pm_entry['image_url']})"
     elif payment == "bank":
         pay_detail = (f"**Bank:** {pm_entry.get('bank_name','-')}\n"
                       f"**No. Rekening:** `{pm_entry.get('account_number','-')}`\n"
@@ -1204,48 +1218,110 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
         pay_detail = (f"**Tipe:** {pm_entry.get('type','-')}\n"
                       f"**Nomor:** `{pm_entry.get('number','-')}`")
 
-    order_embed = base_embed("💎 New Premium Order",
-        f"**Package:** {pkg['name']}\n**Duration:** {pkg.get('duration','N/A')}\n"
-        f"**Price:** {pkg.get('price','N/A')}\n**Payment:** {payment.upper()}\n"
-        f"**Ordered by:** {i.user.mention} (`{i.user.id}`)\n**Server:** {i.guild.name}")
-    owner = await bot.fetch_user(bot.owner_id)
-    if owner:
+    # ── DM user: payment instructions + request proof ────────────────────
+    proof_request = base_embed(
+        "💎 Order Received — Awaiting Payment",
+        f"Terima kasih sudah order **{pkg['name']}**!\n\n"
+        f"**Total:** {pkg.get('price','N/A')}\n"
+        f"**Metode:** {payment.upper()}\n\n"
+        f"{pay_detail}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📎 **Setelah bayar, kirim screenshot bukti pembayaran di sini (DM ini).**\n"
+        "⏳ Bukti ditunggu selama **15 menit**. Lebih dari itu order otomatis dibatalkan.",
+        color=0xF59E0B
+    )
+
+    try:
+        dm_channel = await i.user.create_dm()
+        await dm_channel.send(embed=proof_request)
+    except discord.Forbidden:
+        return await i.response.send_message(
+            embed=error_embed("❌ Bot tidak bisa DM kamu.\nAktifkan DM dari server ini di Privacy Settings, lalu coba lagi."),
+            ephemeral=True)
+
+    await i.response.send_message(
+        embed=success_embed("Order diterima! Cek DM kamu untuk instruksi pembayaran & kirim bukti bayar."),
+        ephemeral=True)
+
+    # ── Store pending proof entry ─────────────────────────────────────────
+    pending_proofs[i.user.id] = {
+        "pkg":        pkg,
+        "payment":    payment,
+        "pay_detail": pay_detail,
+        "guild_id":   i.guild.id,
+        "guild_name": i.guild.name,
+        "user":       i.user,
+        "dm_channel": dm_channel,
+    }
+
+    # ── Background task: wait for proof message in DM ────────────────────
+    async def wait_for_proof():
+        TIMEOUT = 15 * 60  # 15 minutes
+
+        def check(msg: discord.Message):
+            return (
+                msg.author.id == i.user.id
+                and isinstance(msg.channel, discord.DMChannel)
+                and (msg.attachments or msg.content.strip())
+            )
+
         try:
-            v = discord.ui.View()
-            v.add_item(discord.ui.Button(label="Contact Buyer",
-                url=f"https://discord.com/users/{i.user.id}", style=discord.ButtonStyle.link))
-            await owner.send(embed=order_embed, view=v)
+            proof_msg: discord.Message = await bot.wait_for("message", check=check, timeout=TIMEOUT)
+        except asyncio.TimeoutError:
+            # Timeout — cancel order
+            pending_proofs.pop(i.user.id, None)
+            try:
+                await dm_channel.send(embed=error_embed(
+                    "⏰ Waktu habis! Order kamu dibatalkan karena bukti pembayaran tidak diterima dalam 15 menit.\n"
+                    "Silakan `/premium order` lagi jika masih ingin berlangganan."))
+            except Exception:
+                pass
+            return
+
+        pending_proofs.pop(i.user.id, None)
+
+        # ── Build order embed for owner ──────────────────────────────────
+        order_embed = base_embed("💎 New Premium Order — Bukti Diterima",
+            f"**Package:** {pkg['name']}\n"
+            f"**Duration:** {pkg.get('duration','N/A')}\n"
+            f"**Price:** {pkg.get('price','N/A')}\n"
+            f"**Payment:** {payment.upper()}\n"
+            f"**Ordered by:** {i.user.mention} (`{i.user.id}`)\n"
+            f"**Server:** {i.guild.name} (`{i.guild.id}`)",
+            color=0x22C55E)
+
+        # ── If user sent text along with proof ──────────────────────────
+        if proof_msg.content.strip():
+            order_embed.add_field(name="📝 Pesan dari Buyer", value=proof_msg.content[:500], inline=False)
+
+        owner = await bot.fetch_user(bot.owner_id)
+        if owner:
+            try:
+                btn_view = discord.ui.View()
+                btn_view.add_item(discord.ui.Button(
+                    label="Contact Buyer",
+                    url=f"https://discord.com/users/{i.user.id}",
+                    style=discord.ButtonStyle.link))
+                # Forward text embed first
+                await owner.send(embed=order_embed, view=btn_view)
+                # Forward all attachments (screenshot, etc)
+                for att in proof_msg.attachments:
+                    await owner.send(
+                        content=f"📎 **Bukti pembayaran dari {i.user}:**",
+                        file=await att.to_file())
+            except Exception:
+                pass
+
+        # ── Confirm to buyer ─────────────────────────────────────────────
+        try:
+            await dm_channel.send(embed=success_embed(
+                "✅ Bukti pembayaran kamu sudah diterima!\n"
+                "Tim kami akan memverifikasi dan mengaktifkan premium sesegera mungkin.\n"
+                "Terima kasih! 🙏"))
         except Exception:
             pass
 
-    confirm = base_embed("✅ Order Received!",
-        f"Order for **{pkg['name']}** submitted!\n\n"
-        f"**Payment:** {payment.upper()}\n{pay_detail}\n\n"
-        f"**Total:** {pkg.get('price','N/A')}\n\nOur team will DM you shortly.")
-    try:
-        await i.user.send(embed=confirm)
-    except Exception:
-        pass
-    await i.response.send_message(embed=success_embed("Order submitted! Check your DMs."), ephemeral=True)
-
-bot.tree.add_command(premium_slash)
-
-# ── Set premium role per guild (admin slash) ──────────────────────────────
-@bot.tree.command(name="setpremiumrole", description="Set which role grants premium access in this server. Requires Manage Server.")
-@app_commands.describe(
-    role="The role that will have premium access (leave blank to clear the current premium role)"
-)
-async def slash_set_premium_role(i: discord.Interaction, role: Optional[discord.Role] = None):
-    if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
-    gc = guild_cfg(cfg, i.guild.id)
-    gc["premium_role_id"] = role.id if role else None
-    save_config(cfg)
-    if role:
-        await i.response.send_message(embed=success_embed(
-            f"Premium role set to {role.mention}.\nMembers with this role can use premium-locked commands."))
-    else:
-        await i.response.send_message(embed=success_embed("Premium role cleared."))
+    asyncio.create_task(wait_for_proof())
 
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
@@ -1512,6 +1588,7 @@ def build_premium_embed() -> discord.Embed:
     pm       = cfg.get("payment_methods", {})
     pc       = cfg.get("premium_commands", [])
     pu       = cfg.get("premium_users", [])
+    pg       = cfg.get("premium_guilds", [])
 
     embed = base_embed("💎 Premium Package Manager",
         "Manage packages, payment methods, command locks, and premium users below.")
@@ -1559,6 +1636,18 @@ def build_premium_embed() -> discord.Embed:
         value=", ".join(f"`{uid}`" for uid in pu[:10]) + ("…" if len(pu) > 10 else "") if pu else "*(none)*",
         inline=False
     )
+
+    # ── Premium guilds (nickname activated) ──
+    if pg:
+        guild_lines = []
+        for gid in pg[:10]:
+            g = bot.get_guild(gid)
+            guild_lines.append(f"✅ **{g.name}** (`{gid}`)" if g else f"✅ `{gid}` *(offline)*")
+        guild_lines_str = "\n".join(guild_lines) + ("…" if len(pg) > 10 else "")
+    else:
+        guild_lines_str = "*(none activated)*"
+    embed.add_field(name="🏷️ Premium Guilds (Nickname Active)", value=guild_lines_str, inline=False)
+
     return embed
 
 
@@ -1652,7 +1741,19 @@ class PremiumManagerView(discord.ui.View):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(AddPremiumUserModal())
 
-    # ── ROW 4: Refresh ────────────────────────────────────────
+    # ── ROW 4: Guild premium nickname ─────────────────────────
+    @discord.ui.button(label="🏷️ Activate Guild", style=discord.ButtonStyle.success, row=4)
+    async def activate_guild(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(GuildNickModal(activate=True))
+
+    @discord.ui.button(label="🗑️ Deactivate Guild", style=discord.ButtonStyle.danger, row=4)
+    async def deactivate_guild(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(GuildNickModal(activate=False))
+
     @discord.ui.button(label="🔃 Refresh", style=discord.ButtonStyle.primary, row=4)
     async def refresh(self, i: discord.Interaction, _btn: discord.ui.Button):
         await i.response.edit_message(embed=build_premium_embed(), view=self)
@@ -1801,6 +1902,64 @@ class AddPremiumUserModal(discord.ui.Modal, title="👤 Add / Remove Premium Use
             await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
         else:
             await i.response.send_message(embed=error_embed("Action must be `add` or `remove`."), ephemeral=True)
+
+
+class GuildNickModal(discord.ui.Modal):
+    """Activate or deactivate 'JoyCannot Premium' nickname in a specific guild."""
+
+    guild_id_input = discord.ui.TextInput(
+        label="Guild ID",
+        placeholder="Right-click server → Copy Server ID",
+        max_length=20
+    )
+
+    def __init__(self, activate: bool):
+        action_label = "Activate" if activate else "Deactivate"
+        super().__init__(title=f"🏷️ {action_label} Premium Nickname")
+        self.activate = activate
+
+    async def on_submit(self, i: discord.Interaction):
+        try:
+            gid = int(self.guild_id_input.value.strip())
+        except ValueError:
+            return await i.response.send_message(embed=error_embed("Invalid Guild ID."), ephemeral=True)
+
+        guild = bot.get_guild(gid)
+        if not guild:
+            return await i.response.send_message(
+                embed=error_embed(f"Bot is not in guild `{gid}` or guild not found."), ephemeral=True)
+
+        pg = cfg.setdefault("premium_guilds", [])
+
+        if self.activate:
+            if gid in pg:
+                return await i.response.send_message(
+                    embed=error_embed(f"**{guild.name}** is already activated."), ephemeral=True)
+            pg.append(gid)
+            save_config(cfg)
+            # Defer so we can do the async nickname change
+            await i.response.defer()
+            await set_guild_premium_nick(guild, activate=True)
+            await i.followup.send(
+                embed=success_embed(
+                    f"✅ Premium nickname activated for **{guild.name}**!\n"
+                    f"Bot nickname is now `{PREMIUM_NICK}` in that server."),
+                ephemeral=True)
+            await i.edit_original_response(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
+        else:
+            if gid not in pg:
+                return await i.response.send_message(
+                    embed=error_embed(f"**{guild.name}** is not in the premium list."), ephemeral=True)
+            cfg["premium_guilds"] = [g for g in pg if g != gid]
+            save_config(cfg)
+            await i.response.defer()
+            await set_guild_premium_nick(guild, activate=False)
+            await i.followup.send(
+                embed=success_embed(
+                    f"✅ Premium nickname deactivated for **{guild.name}**.\n"
+                    f"Bot nickname has been reset."),
+                ephemeral=True)
+            await i.edit_original_response(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
 @bot.command(name="premium")
@@ -2037,8 +2196,9 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
         if cmd_name and is_premium_command(cmd_name):
             await ctx.send(embed=base_embed(
                 "💎 Premium Required",
-                f"The command `{cmd_name}` requires **Premium** access.\n"
-                "Use `/premium info` to see available packages.",
+                f"The command `{cmd_name}` is only available for **Premium** servers or users.\n\n"
+                "📦 Use `/premium info` to see available packages.\n"
+                "📩 Use `/premium order` to subscribe.",
                 color=0xF59E0B))
         else:
             await ctx.send(embed=error_embed("❌ Owner only command."))
