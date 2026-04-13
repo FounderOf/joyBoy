@@ -1323,6 +1323,8 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
 
     asyncio.create_task(wait_for_proof())
 
+bot.tree.add_command(premium_slash)
+
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
 #  FIX #3 — EVENT SYSTEM (LIVE COUNTDOWN)
