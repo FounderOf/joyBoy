@@ -294,17 +294,52 @@ intents.message_content = True
 intents.members         = True
 intents.guilds          = True
 
+cfg = load_config()
+
+# ── Store original command descriptions for premium label system ──
+# Must be declared BEFORE CommandTree subclass uses it.
+ORIGINAL_CMD_DESCRIPTIONS: dict[str, str] = {}
+
+# ── Subclass CommandTree — the ONLY correct way to add a global slash check ──
+class JoyCommandTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Global gate: block non-premium users from premium-locked commands."""
+        if not interaction.command:
+            return True
+        cmd_name = interaction.command.qualified_name  # e.g. "kick" or "ticket setup"
+        if not (cmd_name in cfg.get("premium_commands", [])):
+            return True
+        # Check premium access
+        user = interaction.user
+        if user.id in cfg.get("premium_users", []):
+            return True
+        if interaction.guild:
+            gc  = guild_cfg(cfg, interaction.guild.id)
+            rid = gc.get("premium_role_id")
+            if rid:
+                role = interaction.guild.get_role(rid)
+                if role and isinstance(user, discord.Member) and role in user.roles:
+                    return True
+        # Blocked — send ephemeral notice
+        try:
+            await interaction.response.send_message(
+                embed=base_embed(
+                    "💎 Premium Required",
+                    f"The command `/{cmd_name}` requires **Premium** access.\n"
+                    "Use `/premium info` to see available packages and how to upgrade.",
+                    color=0xF59E0B),
+                ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+        return False
+
 bot = commands.Bot(
     command_prefix=BOT_PREFIX,
     intents=intents,
     help_command=None,
     owner_id=int(os.getenv("OWNER_ID", "0")),
+    tree_cls=JoyCommandTree,
 )
-
-cfg = load_config()
-
-# ── Store original command descriptions for premium label system ──
-ORIGINAL_CMD_DESCRIPTIONS: dict[str, str] = {}
 
 # ─────────────────────────────────────────────
 # PREMIUM ACCESS HELPERS
@@ -327,20 +362,37 @@ def is_premium_command(cmd_name: str) -> bool:
     return cmd_name in cfg.get("premium_commands", [])
 
 async def apply_premium_labels():
-    """Update slash command descriptions to show/hide 💎 label, then re-sync."""
+    """
+    Update slash command descriptions to add/remove [💎] label, then re-sync.
+    Always reads from ORIGINAL_CMD_DESCRIPTIONS so labels never stack.
+    """
     premium_cmds = set(cfg.get("premium_commands", []))
+
     for cmd in bot.tree.get_commands():
         base_name = cmd.name
-        orig = ORIGINAL_CMD_DESCRIPTIONS.get(base_name, cmd.description)
+        orig = ORIGINAL_CMD_DESCRIPTIONS.get(base_name)
+        if orig is None:
+            # Fallback: strip any existing label from current description
+            orig = cmd.description.removeprefix("[💎] ")
+            ORIGINAL_CMD_DESCRIPTIONS[base_name] = orig
         cmd.description = (f"[💎] {orig}"[:100] if base_name in premium_cmds else orig)
+
         if hasattr(cmd, "commands"):
             for sub in cmd.commands:
                 sub_full = f"{base_name} {sub.name}"
-                sub_orig = ORIGINAL_CMD_DESCRIPTIONS.get(sub_full, sub.description)
+                sub_orig = ORIGINAL_CMD_DESCRIPTIONS.get(sub_full)
+                if sub_orig is None:
+                    sub_orig = sub.description.removeprefix("[💎] ")
+                    ORIGINAL_CMD_DESCRIPTIONS[sub_full] = sub_orig
                 sub.description = (f"[💎] {sub_orig}"[:100] if sub_full in premium_cmds else sub_orig)
+
+    # Small delay to avoid rate-limit when called right after another sync
+    await asyncio.sleep(1)
     try:
         synced = await bot.tree.sync()
-        logging.info(f"[Premium Labels] Re-synced {len(synced)} commands.")
+        logging.info(f"[Premium Labels] Re-synced {len(synced)} commands. Locked: {premium_cmds}")
+    except discord.HTTPException as e:
+        logging.error(f"[Premium Labels] Sync HTTP error: {e}")
     except Exception as e:
         logging.error(f"[Premium Labels] Sync error: {e}")
 
@@ -367,30 +419,18 @@ async def global_prefix_premium_check(ctx: commands.Context) -> bool:
     cmd_name = ctx.command.qualified_name if ctx.command else None
     if not cmd_name or cmd_name in OWNER_ONLY_CMDS:
         return True
-    if not is_premium_command(cmd_name):
+    if cmd_name not in cfg.get("premium_commands", []):
         return True
-    if user_has_premium(ctx.guild, ctx.author):
+    if ctx.author.id in cfg.get("premium_users", []):
         return True
-    # Will trigger CheckFailure → handled in on_command_error
-    return False
-
-# ── Global slash premium gate ──────────────────────────────────────────────
-@bot.tree.interaction_check
-async def global_slash_premium_check(i: discord.Interaction) -> bool:
-    """Block non-premium users from premium-locked slash commands."""
-    if not i.command:
-        return True
-    cmd_name = i.command.qualified_name
-    if not is_premium_command(cmd_name):
-        return True
-    if user_has_premium(i.guild, i.user):
-        return True
-    await i.response.send_message(embed=base_embed(
-        "💎 Premium Required",
-        f"The command `/{cmd_name}` requires **Premium** access.\n"
-        "Use `/premium info` to see available packages and how to upgrade.",
-        color=0xF59E0B), ephemeral=True)
-    return False
+    if ctx.guild:
+        gc  = guild_cfg(cfg, ctx.guild.id)
+        rid = gc.get("premium_role_id")
+        if rid:
+            role = ctx.guild.get_role(rid)
+            if role and isinstance(ctx.author, discord.Member) and role in ctx.author.roles:
+                return True
+    return False  # → triggers CheckFailure → on_command_error
 
 # ─────────────────────────────────────────────
 # EVENTS
@@ -399,20 +439,27 @@ async def global_slash_premium_check(i: discord.Interaction) -> bool:
 @bot.event
 async def on_ready():
     print(f"[JoyCannot] Ready as {bot.user} (ID: {bot.user.id})")
-    # ── Snapshot original command descriptions ──
+
+    # ── Snapshot CLEAN original descriptions (strip any leftover [💎] prefix) ──
     for cmd in bot.tree.get_commands():
-        ORIGINAL_CMD_DESCRIPTIONS[cmd.name] = cmd.description
+        raw = cmd.description.removeprefix("[💎] ")
+        ORIGINAL_CMD_DESCRIPTIONS[cmd.name] = raw
         if hasattr(cmd, "commands"):
             for sub in cmd.commands:
-                ORIGINAL_CMD_DESCRIPTIONS[f"{cmd.name} {sub.name}"] = sub.description
+                sub_raw = sub.description.removeprefix("[💎] ")
+                ORIGINAL_CMD_DESCRIPTIONS[f"{cmd.name} {sub.name}"] = sub_raw
+
+    # First sync (clean state)
     try:
         synced = await bot.tree.sync()
         print(f"[JoyCannot] Synced {len(synced)} slash command(s).")
     except Exception as e:
         print(f"[JoyCannot] Sync error: {e}")
-    # Apply premium labels that were saved from previous session
+
+    # Re-apply premium labels saved from previous session AFTER first sync
     if cfg.get("premium_commands"):
         await apply_premium_labels()
+
     cleanup_spam_cache.start()
 
 
