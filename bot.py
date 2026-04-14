@@ -513,11 +513,63 @@ async def apply_premium_labels():
     except Exception as e:
         logging.error(f"[Premium Labels] Global sync error: {e}")
 
-# Anti-spam tracker
-spam_tracker:      dict[int, dict[str, set]] = defaultdict(lambda: defaultdict(set))
-spam_cleanup_times: dict[int, float]          = {}
-SPAM_THRESHOLD = 3
-SPAM_WINDOW    = 8.0
+# ─────────────────────────────────────────────
+# ANTI CROSS-CHANNEL SPAM
+# ─────────────────────────────────────────────
+#
+# Fingerprint = normalized text + attachment filenames + URLs in message.
+# We track: uid → fingerprint → {channel_ids, message_ids}
+# When the same fingerprint appears in SPAM_THRESHOLD different channels
+# within SPAM_WINDOW seconds → delete ALL tracked spam messages → ban user.
+#
+# Covers: plain text, invite links, image spam, file spam, mixed content.
+# ─────────────────────────────────────────────
+
+SPAM_THRESHOLD = 3      # How many different channels trigger a ban
+SPAM_WINDOW    = 8.0    # Seconds within which the spread must happen
+
+# uid → fingerprint → {"channels": set, "messages": list of (channel_id, message_id), "first_seen": float}
+spam_tracker:       dict[int, dict[str, dict]] = defaultdict(dict)
+spam_cleanup_times: dict[int, float]           = {}
+
+
+def _spam_fingerprint(message: discord.Message) -> str:
+    """
+    Build a normalized fingerprint for a message that covers:
+    - Text content (lowercased, stripped)
+    - All attachment filenames (catches image/file spam)
+    - All URLs found in the message (catches invite / link spam)
+    - Embed URLs if present
+    Returns a single string used as the tracker key.
+    """
+    parts: list[str] = []
+
+    # ── Text ──────────────────────────────────────────────────────────────
+    text = message.content.strip().lower()
+    if text:
+        parts.append(text)
+
+    # ── Attachments (image, file, video, etc.) ────────────────────────────
+    for att in message.attachments:
+        # Use filename so same image with different URLs still matches
+        parts.append(f"att:{att.filename.lower()}")
+
+    # ── URLs extracted from text ──────────────────────────────────────────
+    url_pattern = re.compile(
+        r"(https?://[^\s]+|discord\.gg/[^\s]+|discord\.com/invite/[^\s]+)",
+        re.IGNORECASE
+    )
+    for url in url_pattern.findall(message.content):
+        # Normalize: strip tracking params, lowercase
+        normalized = url.lower().split("?")[0].rstrip("/")
+        parts.append(f"url:{normalized}")
+
+    # ── Embeds (links auto-embedded by Discord) ───────────────────────────
+    for embed in message.embeds:
+        if embed.url:
+            parts.append(f"url:{embed.url.lower().split('?')[0].rstrip('/')}")
+
+    return "|".join(sorted(set(parts))) or "empty"
 
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
@@ -644,33 +696,111 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # ── Anti cross-channel spam ──────────────────────
-    if message.guild and message.content.strip():
-        uid     = message.author.id
-        content = message.content.strip()
-        now     = discord.utils.utcnow().timestamp()
-        spam_tracker[uid][content].add(message.channel.id)
-        spam_cleanup_times[uid] = now
+    # ── Anti cross-channel spam ───────────────────────────────────────────
+    if message.guild:
+        uid = message.author.id
+        now = discord.utils.utcnow().timestamp()
 
-        if len(spam_tracker[uid][content]) >= SPAM_THRESHOLD:
-            try:
-                await message.guild.ban(message.author, reason="[JoyCannot] Cross-channel spam.", delete_message_days=1)
-                gc     = guild_cfg(cfg, message.guild.id)
-                log_id = gc["ticket"].get("log_channel")
-                if log_id:
-                    ch = message.guild.get_channel(log_id)
-                    if ch:
-                        await ch.send(embed=error_embed(
-                            t(cfg, message.guild.id, "antispam_ban", user=str(message.author))))
-            except discord.Forbidden:
-                pass
-            spam_tracker.pop(uid, None)
-            return
+        # Only track if message has any detectable content
+        has_content = (
+            message.content.strip()
+            or message.attachments
+            or message.embeds
+        )
 
-    # ── FIX #2: prefix → slash bridge ───────────────
-    # If someone uses "!Joy <cmd>" but it's not an owner-only cmd,
-    # we simulate a slash command response via ctx.
+        if has_content:
+            fp = _spam_fingerprint(message)
+
+            # Init tracker entry for this fingerprint if needed
+            if fp not in spam_tracker[uid]:
+                spam_tracker[uid][fp] = {
+                    "channels":  set(),
+                    "messages":  [],   # list of (channel_id, message_id) to delete
+                    "first_seen": now,
+                }
+
+            entry = spam_tracker[uid][fp]
+
+            # Only count within SPAM_WINDOW
+            if now - entry["first_seen"] <= SPAM_WINDOW:
+                entry["channels"].add(message.channel.id)
+                entry["messages"].append((message.channel.id, message.id))
+                spam_cleanup_times[uid] = now
+
+                # ── PREEMPTIVE DELETE ─────────────────────────────────────
+                # If this fingerprint already appeared in at least 1 other
+                # channel, delete the new message immediately — don't wait
+                # for the full threshold. Spammers send all at once so by
+                # the time we hit threshold the damage is already done.
+                channel_count = len(entry["channels"])
+                if channel_count >= 2:
+                    await _try_delete(message.channel, message.id)
+
+                if channel_count >= SPAM_THRESHOLD:
+                    # ── Delete all remaining tracked spam messages ────────
+                    delete_tasks = []
+                    for ch_id, msg_id in entry["messages"]:
+                        ch = message.guild.get_channel(ch_id)
+                        if ch:
+                            delete_tasks.append(_try_delete(ch, msg_id))
+                    await asyncio.gather(*delete_tasks)
+
+                    # ── Ban the spammer ───────────────────────────────────
+                    try:
+                        await message.guild.ban(
+                            message.author,
+                            reason="[JoyCannot] Cross-channel spam (auto-detected).",
+                            delete_message_days=1
+                        )
+                    except discord.Forbidden:
+                        pass
+
+                    # ── Log to ticket log channel ─────────────────────────
+                    gc     = guild_cfg(cfg, message.guild.id)
+                    log_id = gc["ticket"].get("log_channel")
+                    if log_id:
+                        log_ch = message.guild.get_channel(log_id)
+                        if log_ch:
+                            log_embed = error_embed(
+                                t(cfg, message.guild.id, "antispam_ban", user=str(message.author)))
+                            log_embed.add_field(
+                                name="📋 Detail",
+                                value=(
+                                    f"**User:** {message.author.mention} (`{message.author.id}`)\n"
+                                    f"**Channels spammed:** {len(entry['channels'])}\n"
+                                    f"**Messages deleted:** {len(entry['messages'])}\n"
+                                    f"**Content type:** "
+                                    f"{'Image/File' if message.attachments else 'Link/Text'}"
+                                ),
+                                inline=False
+                            )
+                            try:
+                                await log_ch.send(embed=log_embed)
+                            except Exception:
+                                pass
+
+                    spam_tracker.pop(uid, None)
+                    return
+            else:
+                # Window expired for this fingerprint — reset it
+                spam_tracker[uid][fp] = {
+                    "channels":   {message.channel.id},
+                    "messages":   [(message.channel.id, message.id)],
+                    "first_seen": now,
+                }
+                spam_cleanup_times[uid] = now
+
+    # ── Prefix command routing ────────────────────────────────────────────
     await bot.process_commands(message)
+
+
+async def _try_delete(channel: discord.TextChannel, message_id: int):
+    """Silently attempt to delete a message by ID."""
+    try:
+        msg = await channel.fetch_message(message_id)
+        await msg.delete()
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
 
 
 # ─────────────────────────────────────────────
@@ -679,11 +809,12 @@ async def on_message(message: discord.Message):
 
 @tasks.loop(seconds=10)
 async def cleanup_spam_cache():
+    """Remove expired spam tracking entries to prevent memory leak."""
     now   = discord.utils.utcnow().timestamp()
-    stale = [u for u, ts in spam_cleanup_times.items() if now - ts > SPAM_WINDOW]
-    for u in stale:
-        spam_tracker.pop(u, None)
-        spam_cleanup_times.pop(u, None)
+    stale_users = [u for u, ts in spam_cleanup_times.items() if now - ts > SPAM_WINDOW * 2]
+    for uid in stale_users:
+        spam_tracker.pop(uid, None)
+        spam_cleanup_times.pop(uid, None)
 
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
