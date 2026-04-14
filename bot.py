@@ -1,6 +1,6 @@
 """
 JoyCannot Discord Bot
-Author: JoyCannot Team
+Author: NiksPARADISE
 Version: 1.3.0
 License: MIT
 
