@@ -1046,6 +1046,68 @@ async def autocomplete_ban_reason(
         if current.lower() in r.lower()
     ][:25]
 
+async def do_addemoji(guild: discord.Guild, emoji_or_url: str, name: str = "") -> dict:
+    """
+    Add an emoji to a guild.
+    Supports two modes:
+      1. Pasted emoji  → emoji_or_url = '<:name:id>' or '<a:name:id>' (animated)
+         Bot fetches image from Discord CDN automatically.
+         Name is taken from the emoji itself (can be overridden with `name` param).
+      2. URL mode      → emoji_or_url = 'https://...'
+         Name is required.
+
+    Returns {"success": True, "emoji": emoji_obj}
+         or {"success": False, "error": str}
+    """
+    import aiohttp
+
+    # ── Mode 1: Pasted Discord emoji ──────────────────────────────────────
+    # Format: <:name:id> or <a:name:id> (animated)
+    emoji_re = re.fullmatch(r"<(a?):([a-zA-Z0-9_]+):(\d+)>", emoji_or_url.strip())
+    if emoji_re:
+        animated   = emoji_re.group(1) == "a"
+        emoji_name = name.strip() or emoji_re.group(2)   # use custom name if given
+        emoji_id   = emoji_re.group(3)
+        ext        = "gif" if animated else "png"
+        cdn_url    = f"https://cdn.discordapp.com/emojis/{emoji_id}.{ext}?size=128&quality=lossless"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(cdn_url) as resp:
+                    if resp.status != 200:
+                        return {"success": False, "error": f"Could not fetch emoji from Discord CDN (HTTP {resp.status})."}
+                    data = await resp.read()
+            emoji = await guild.create_custom_emoji(name=emoji_name, image=data)
+            return {"success": True, "emoji": emoji}
+        except discord.HTTPException as e:
+            return {"success": False, "error": f"Discord error: {e.text}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ── Mode 2: Direct URL ────────────────────────────────────────────────
+    url = emoji_or_url.strip()
+    if not name.strip():
+        return {"success": False,
+                "error": "Please provide a **name** when using a URL.\n"
+                         "Usage: `!Joy addemoji <url> <name>`\n"
+                         "Or paste an emoji directly: `!Joy addemoji <:emoji:id>`"}
+    if not url.startswith("http"):
+        return {"success": False,
+                "error": "Invalid input. Either paste a Discord emoji (e.g. `<:name:id>`) "
+                         "or provide a valid image URL starting with `http`."}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return {"success": False, "error": f"Could not fetch image (HTTP {resp.status})."}
+                data = await resp.read()
+        emoji = await guild.create_custom_emoji(name=name.strip(), image=data)
+        return {"success": True, "emoji": emoji}
+    except discord.HTTPException as e:
+        return {"success": False, "error": f"Discord error: {e.text}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
 #  SLASH COMMANDS
@@ -1136,24 +1198,22 @@ async def slash_ping(i: discord.Interaction):
 async def slash_help(i: discord.Interaction):
     await do_help(i.response.send_message)
 
-@bot.tree.command(name="addemoji", description="Add a custom emoji to this server from an image URL. Requires Manage Emojis.")
+@bot.tree.command(name="addemoji", description="Add an emoji to this server — paste an emoji directly OR provide a name + image URL.")
 @app_commands.describe(
-    name="Name for the new emoji (letters, numbers, underscores only)",
-    url="Direct image URL (.png, .jpg, .gif) — max 256 KB"
+    emoji_or_url="Paste an emoji from another server (e.g. <:name:id>) OR a direct image URL",
+    name="Custom name for the emoji (required only when using a URL, not needed for pasted emoji)"
 )
-async def slash_addemoji(i: discord.Interaction, name: str, url: str):
+async def slash_addemoji(i: discord.Interaction, emoji_or_url: str, name: str = ""):
     if not i.user.guild_permissions.manage_emojis:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
     await i.response.defer()
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                data = await resp.read()
-        emoji = await i.guild.create_custom_emoji(name=name, image=data)
-        await i.followup.send(embed=success_embed(t(cfg, i.guild.id, "emoji_add", name=emoji.name) + f" {emoji}"))
-    except Exception as e:
-        await i.followup.send(embed=error_embed(f"Failed: {e}"), ephemeral=True)
+    result = await do_addemoji(i.guild, emoji_or_url, name)
+    if result["success"]:
+        emoji = result["emoji"]
+        await i.followup.send(embed=success_embed(
+            t(cfg, i.guild.id, "emoji_add", name=emoji.name) + f" {emoji}"))
+    else:
+        await i.followup.send(embed=error_embed(result["error"]), ephemeral=True)
 
 # ── LANGUAGE ──────────────────────────────────
 
@@ -1701,18 +1761,27 @@ async def pfx_help(ctx):
     await do_help(ctx.send)
 
 @bot.command(name="addemoji")
-async def pfx_addemoji(ctx, name: str, url: str):
+async def pfx_addemoji(ctx, emoji_or_url: str = "", *, name: str = ""):
+    """
+    !Joy addemoji <:emoji:id>           → copy emoji from another server
+    !Joy addemoji <:emoji:id> newname   → copy with custom name
+    !Joy addemoji <url> <name>          → add from image URL
+    """
     if not ctx.author.guild_permissions.manage_emojis:
         return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                data = await resp.read()
-        emoji = await ctx.guild.create_custom_emoji(name=name, image=data)
-        await ctx.send(embed=success_embed(t(cfg, ctx.guild.id, "emoji_add", name=emoji.name) + f" {emoji}"))
-    except Exception as e:
-        await ctx.send(embed=error_embed(f"Failed: {e}"))
+    if not emoji_or_url:
+        return await ctx.send(embed=error_embed(
+            "**Usage:**\n"
+            "`!Joy addemoji <:emoji:id>` — paste emoji from another server\n"
+            "`!Joy addemoji <:emoji:id> customname` — paste with custom name\n"
+            "`!Joy addemoji <url> <name>` — add from image URL"))
+    result = await do_addemoji(ctx.guild, emoji_or_url, name)
+    if result["success"]:
+        emoji = result["emoji"]
+        await ctx.send(embed=success_embed(
+            t(cfg, ctx.guild.id, "emoji_add", name=emoji.name) + f" {emoji}"))
+    else:
+        await ctx.send(embed=error_embed(result["error"]))
 
 # Language prefix bridge
 @bot.command(name="language")
