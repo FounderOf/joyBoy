@@ -1,6 +1,6 @@
 """
 JoyCannot Discord Bot
-Author: NiksPARADISE
+Author: JoyCannot Team
 Version: 1.3.0
 License: MIT
 
@@ -51,9 +51,12 @@ def load_config() -> dict:
         default = {
             "guilds": {},
             "premium_packages": [],
-            "premium_commands": [],   # list of command names locked to premium
-            "premium_users":    [],   # global list of user IDs with premium access
-            "premium_guilds":   [],   # guild IDs with premium nickname activated
+            "premium_commands": [],
+            "premium_users":    [],
+            "premium_guilds":   [],
+            "vote_discount":    10,          # % discount for voters (owner-configurable)
+            "topgg_webhook_secret": "",      # set via !Joy premium manager
+            "votes": {},                     # user_id → last_vote ISO timestamp
             "payment_methods": {
                 "qris":    {"enabled": True, "image_url": "", "info": ""},
                 "bank":    {"enabled": True, "bank_name": "", "account_number": "", "account_name": ""},
@@ -81,6 +84,14 @@ def load_config() -> dict:
     data.setdefault("premium_commands", [])
     data.setdefault("premium_users",    [])
     data.setdefault("premium_guilds",   [])
+    data.setdefault("vote_discount",    10)
+    data.setdefault("topgg_webhook_secret", "")
+    data.setdefault("votes",            {})
+    # ── Migrate whitelist_role → support_role in all guilds ──────────────
+    for gid, gc in data.get("guilds", {}).items():
+        tkt = gc.get("ticket", {})
+        if "whitelist_role" in tkt and "support_role" not in tkt:
+            tkt["support_role"] = tkt.pop("whitelist_role")
     save_config(data)
     return data
 
@@ -99,14 +110,19 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
             "ticket": {
                 "category": None,
                 "log_channel": None,
-                "whitelist_role": None,
+                "support_role": None,   # role that can see & handle tickets
                 "panels": []
             },
             "warnings": {},
             "active_tickets": {}
         }
         save_config(cfg)
-    return cfg["guilds"][gid]
+    gc = cfg["guilds"][gid]
+    # Migrate whitelist_role → support_role if needed
+    tkt = gc.get("ticket", {})
+    if "whitelist_role" in tkt and "support_role" not in tkt:
+        tkt["support_role"] = tkt.pop("whitelist_role")
+    return gc
 
 # ─────────────────────────────────────────────
 # LANGUAGE SYSTEM
@@ -1048,25 +1064,20 @@ async def autocomplete_ban_reason(
 
 async def do_addemoji(guild: discord.Guild, emoji_or_url: str, name: str = "") -> dict:
     """
-    Add an emoji to a guild.
-    Supports two modes:
-      1. Pasted emoji  → emoji_or_url = '<:name:id>' or '<a:name:id>' (animated)
-         Bot fetches image from Discord CDN automatically.
-         Name is taken from the emoji itself (can be overridden with `name` param).
-      2. URL mode      → emoji_or_url = 'https://...'
-         Name is required.
-
-    Returns {"success": True, "emoji": emoji_obj}
-         or {"success": False, "error": str}
+    Add an emoji to a guild. Supports three modes:
+      1. Custom Discord emoji  <:name:id> or <a:name:id>
+      2. Unicode/native emoji  😁 🔥 etc  (fetched from Twemoji CDN)
+      3. Direct image URL      https://...
     """
-    import aiohttp
+    import aiohttp, unicodedata
 
-    # ── Mode 1: Pasted Discord emoji ──────────────────────────────────────
-    # Format: <:name:id> or <a:name:id> (animated)
-    emoji_re = re.fullmatch(r"<(a?):([a-zA-Z0-9_]+):(\d+)>", emoji_or_url.strip())
+    src = emoji_or_url.strip()
+
+    # ── Mode 1: Custom Discord emoji <:name:id> or <a:name:id> ────────────
+    emoji_re = re.fullmatch(r"<(a?):([a-zA-Z0-9_]+):(\d+)>", src)
     if emoji_re:
         animated   = emoji_re.group(1) == "a"
-        emoji_name = name.strip() or emoji_re.group(2)   # use custom name if given
+        emoji_name = name.strip() or emoji_re.group(2)
         emoji_id   = emoji_re.group(3)
         ext        = "gif" if animated else "png"
         cdn_url    = f"https://cdn.discordapp.com/emojis/{emoji_id}.{ext}?size=128&quality=lossless"
@@ -1083,17 +1094,56 @@ async def do_addemoji(guild: discord.Guild, emoji_or_url: str, name: str = "") -
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ── Mode 2: Direct URL ────────────────────────────────────────────────
-    url = emoji_or_url.strip()
+    # ── Mode 2: Unicode/native emoji 😁 🔥 ──────────────────────────────
+    def _is_unicode_emoji(s: str) -> bool:
+        if s.startswith("http") or s.startswith("<"):
+            return False
+        for ch in s:
+            if ord(ch) < 0x00A0:
+                return False
+        return True
+
+    if _is_unicode_emoji(src):
+        if not name.strip():
+            try:
+                auto_name = unicodedata.name(src[0], "emoji").replace(" ", "_").replace("-", "_").lower()
+                emoji_name = re.sub(r"[^a-z0-9_]", "", auto_name)[:32] or "emoji"
+            except Exception:
+                emoji_name = "emoji"
+        else:
+            emoji_name = name.strip()
+        codepoints = [f"{ord(c):x}" for c in src if ord(c) != 0xFE0F]
+        twemoji_url = "https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/" + "-".join(codepoints) + ".png"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(twemoji_url) as resp:
+                    if resp.status != 200:
+                        codepoints2 = [f"{ord(c):x}" for c in src if ord(c) not in (0xFE0F, 0x200D)]
+                        twemoji_url2 = "https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/" + "-".join(codepoints2) + ".png"
+                        async with session.get(twemoji_url2) as resp2:
+                            if resp2.status != 200:
+                                return {"success": False, "error": f"Emoji `{src}` not found. Try `<:name:id>` or a URL instead."}
+                            data = await resp2.read()
+                    else:
+                        data = await resp.read()
+            emoji = await guild.create_custom_emoji(name=emoji_name, image=data)
+            return {"success": True, "emoji": emoji}
+        except discord.HTTPException as e:
+            return {"success": False, "error": f"Discord error: {e.text}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ── Mode 3: Direct image URL ──────────────────────────────────────────
+    url = src
     if not name.strip():
         return {"success": False,
                 "error": "Please provide a **name** when using a URL.\n"
                          "Usage: `!Joy addemoji <url> <name>`\n"
-                         "Or paste an emoji directly: `!Joy addemoji <:emoji:id>`"}
+                         "Or: `!Joy addemoji 😁 name` / `!Joy addemoji <:emoji:id>`"}
     if not url.startswith("http"):
         return {"success": False,
-                "error": "Invalid input. Either paste a Discord emoji (e.g. `<:name:id>`) "
-                         "or provide a valid image URL starting with `http`."}
+                "error": "Invalid input. Use:\n• `<:name:id>` — custom Discord emoji\n"
+                         "• `😁 name` — native emoji\n• `https://...` — image URL"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
@@ -1106,7 +1156,6 @@ async def do_addemoji(guild: discord.Guild, emoji_or_url: str, name: str = "") -
         return {"success": False, "error": f"Discord error: {e.text}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
-
 
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
@@ -1246,30 +1295,30 @@ bot.tree.add_command(lang_group)
 
 ticket_group = app_commands.Group(name="ticket", description="Manage the server's ticket support system.")
 
-@ticket_group.command(name="setup", description="Configure the ticket system: category, log channel, and optional role restriction.")
+@ticket_group.command(name="setup", description="Configure the ticket system: category, log channel, and support staff role.")
 @app_commands.describe(
     category="The category where new ticket channels will be created",
     log_channel="Channel where ticket open/close events are logged",
-    whitelist_role="Only members with this role can open tickets (leave blank = everyone)"
+    support_role="Role for admins/ticket support staff — they get auto-access to every ticket (leave blank = only Manage Channels perm)"
 )
 async def slash_ticket_setup(
     i: discord.Interaction,
     category: discord.CategoryChannel,
     log_channel: discord.TextChannel,
-    whitelist_role: Optional[discord.Role] = None
+    support_role: Optional[discord.Role] = None
 ):
     if not i.user.guild_permissions.manage_guild:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
     gc = guild_cfg(cfg, i.guild.id)
-    gc["ticket"]["category"]      = category.id
-    gc["ticket"]["log_channel"]   = log_channel.id
-    gc["ticket"]["whitelist_role"]= whitelist_role.id if whitelist_role else None
+    gc["ticket"]["category"]     = category.id
+    gc["ticket"]["log_channel"]  = log_channel.id
+    gc["ticket"]["support_role"] = support_role.id if support_role else None
     save_config(cfg)
     await i.response.send_message(embed=success_embed(
         f"Ticket system configured!\n"
         f"**Category:** {category.name}\n"
         f"**Log:** {log_channel.mention}\n"
-        f"**Whitelist:** {whitelist_role.mention if whitelist_role else 'Everyone'}"
+        f"**Support Role:** {support_role.mention if support_role else 'Anyone with Manage Channels'}"
     ))
 
 @ticket_group.command(name="panel", description="Send a ticket panel embed with an 'Open Ticket' button to this channel.")
@@ -1324,13 +1373,6 @@ async def handle_open_ticket(i: discord.Interaction):
     gc  = guild_cfg(cfg, i.guild.id)
     uid = str(i.user.id)
 
-    wl_id = gc["ticket"].get("whitelist_role")
-    if wl_id:
-        role = i.guild.get_role(wl_id)
-        if role and role not in i.user.roles:
-            return await i.response.send_message(
-                embed=error_embed(f"You need {role.mention} to open a ticket."), ephemeral=True)
-
     if uid in gc["active_tickets"]:
         existing = i.guild.get_channel(gc["active_tickets"][uid])
         if existing:
@@ -1343,12 +1385,21 @@ async def handle_open_ticket(i: discord.Interaction):
     if not category:
         return await i.response.send_message(embed=error_embed("Ticket category not found."), ephemeral=True)
 
-    safe  = re.sub(r"[^a-z0-9]", "", i.user.name.lower()) or "user"
-    ovw   = {
+    safe = re.sub(r"[^a-z0-9]", "", i.user.name.lower()) or "user"
+
+    # ── Build permission overwrites ───────────────────────────────────────
+    ovw = {
         i.guild.default_role: discord.PermissionOverwrite(read_messages=False),
         i.user:               discord.PermissionOverwrite(read_messages=True, send_messages=True),
         i.guild.me:           discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
     }
+    # Give support role full access to ticket channel
+    sr_id = gc["ticket"].get("support_role")
+    support_role = i.guild.get_role(sr_id) if sr_id else None
+    if support_role:
+        ovw[support_role] = discord.PermissionOverwrite(
+            read_messages=True, send_messages=True, manage_messages=True)
+
     ch = await i.guild.create_text_channel(f"ticket-{safe}", category=category, overwrites=ovw)
     gc["active_tickets"][uid] = ch.id
     save_config(cfg)
@@ -1375,9 +1426,14 @@ async def handle_open_ticket(i: discord.Interaction):
                     break
             await interaction.channel.delete(reason="Ticket closed.")
 
+    sr_mention = support_role.mention if support_role else ""
     welcome = base_embed(f"🎫 Ticket — {i.user.display_name}",
-        f"Hello {i.user.mention}! Staff will assist you shortly.\nClick **Close Ticket** when resolved.")
-    await ch.send(embed=welcome, view=CloseView())
+        f"Hello {i.user.mention}! "
+        f"{'Our ' + sr_mention + ' staff' if sr_mention else 'Staff'} will assist you shortly.\n"
+        f"Click **Close Ticket** when resolved.")
+    await ch.send(
+        content=sr_mention if sr_mention else None,
+        embed=welcome, view=CloseView())
 
     log_id = gc["ticket"].get("log_channel")
     if log_id:
@@ -1443,7 +1499,29 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
     if not (isinstance(pm_entry, dict) and pm_entry.get("enabled")):
         return await i.response.send_message(embed=error_embed("Payment method not available."), ephemeral=True)
 
-    # ── Build payment detail string ──────────────────────────────────────
+    # ── Vote discount check ───────────────────────────────────────────────
+    discount_pct  = get_vote_discount(i.user.id)
+    original_price = pkg.get("price", "N/A")
+    if discount_pct > 0:
+        # Try to parse numeric price for discount calculation
+        price_str = original_price
+        import re as _re
+        nums = _re.findall(r"[\d.,]+", original_price.replace(".", "").replace(",", ""))
+        if nums:
+            try:
+                base_val      = int(nums[0])
+                discounted    = int(base_val * (1 - discount_pct / 100))
+                # Reformat with same prefix/suffix style
+                prefix        = original_price[:original_price.index(nums[0])].rstrip()
+                price_display = f"~~{original_price}~~ → **{prefix} {discounted:,}** (-{discount_pct}% vote discount 🗳️)"
+            except Exception:
+                price_display = f"{original_price} (-{discount_pct}% vote discount 🗳️)"
+        else:
+            price_display = f"{original_price} (-{discount_pct}% vote discount 🗳️)"
+    else:
+        price_display = original_price
+
+    # ── Build payment detail string ───────────────────────────────────────
     if payment == "qris":
         pay_detail = pm_entry.get("info") or "Scan QRIS di bawah."
         if pm_entry.get("image_url"):
@@ -1460,7 +1538,7 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
     proof_request = base_embed(
         "💎 Order Received — Awaiting Payment",
         f"Terima kasih sudah order **{pkg['name']}**!\n\n"
-        f"**Total:** {pkg.get('price','N/A')}\n"
+        f"**Total:** {price_display}\n"
         f"**Metode:** {payment.upper()}\n\n"
         f"{pay_detail}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1483,13 +1561,15 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
 
     # ── Store pending proof entry ─────────────────────────────────────────
     pending_proofs[i.user.id] = {
-        "pkg":        pkg,
-        "payment":    payment,
-        "pay_detail": pay_detail,
-        "guild_id":   i.guild.id,
-        "guild_name": i.guild.name,
-        "user":       i.user,
-        "dm_channel": dm_channel,
+        "pkg":          pkg,
+        "payment":      payment,
+        "pay_detail":   pay_detail,
+        "guild_id":     i.guild.id,
+        "guild_name":   i.guild.name,
+        "user":         i.user,
+        "dm_channel":   dm_channel,
+        "discount_pct": discount_pct,
+        "price_display": price_display,
     }
 
     # ── Background task: wait for proof message in DM ────────────────────
@@ -1506,7 +1586,6 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
         try:
             proof_msg: discord.Message = await bot.wait_for("message", check=check, timeout=TIMEOUT)
         except asyncio.TimeoutError:
-            # Timeout — cancel order
             pending_proofs.pop(i.user.id, None)
             try:
                 await dm_channel.send(embed=error_embed(
@@ -1518,17 +1597,27 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
 
         pending_proofs.pop(i.user.id, None)
 
-        # ── Build order embed for owner ──────────────────────────────────
+        # ── Build order embed for owner ───────────────────────────────────
         order_embed = base_embed("💎 New Premium Order — Bukti Diterima",
             f"**Package:** {pkg['name']}\n"
             f"**Duration:** {pkg.get('duration','N/A')}\n"
-            f"**Price:** {pkg.get('price','N/A')}\n"
+            f"**Price:** {price_display}\n"
+            f"**Payment:** {payment.upper()}\n"
+            f"**Voted Discount:** {discount_pct}%\n" if discount_pct else
+            f"**Package:** {pkg['name']}\n"
+            f"**Duration:** {pkg.get('duration','N/A')}\n"
+            f"**Price:** {price_display}\n"
             f"**Payment:** {payment.upper()}\n"
             f"**Ordered by:** {i.user.mention} (`{i.user.id}`)\n"
             f"**Server:** {i.guild.name} (`{i.guild.id}`)",
             color=0x22C55E)
 
-        # ── If user sent text along with proof ──────────────────────────
+        # Fix: add ordered by/server as fields so it's always shown
+        order_embed.add_field(name="👤 Ordered by", value=f"{i.user.mention} (`{i.user.id}`)", inline=True)
+        order_embed.add_field(name="🏠 Server", value=f"{i.guild.name} (`{i.guild.id}`)", inline=True)
+        if discount_pct:
+            order_embed.add_field(name="🗳️ Vote Discount", value=f"{discount_pct}%", inline=True)
+
         if proof_msg.content.strip():
             order_embed.add_field(name="📝 Pesan dari Buyer", value=proof_msg.content[:500], inline=False)
 
@@ -1540,9 +1629,7 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
                     label="Contact Buyer",
                     url=f"https://discord.com/users/{i.user.id}",
                     style=discord.ButtonStyle.link))
-                # Forward text embed first
                 await owner.send(embed=order_embed, view=btn_view)
-                # Forward all attachments (screenshot, etc)
                 for att in proof_msg.attachments:
                     await owner.send(
                         content=f"📎 **Bukti pembayaran dari {i.user}:**",
@@ -1550,7 +1637,6 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
             except Exception:
                 pass
 
-        # ── Confirm to buyer ─────────────────────────────────────────────
         try:
             await dm_channel.send(embed=success_embed(
                 "✅ Bukti pembayaran kamu sudah diterima!\n"
@@ -1897,6 +1983,15 @@ def build_premium_embed() -> discord.Embed:
         guild_lines_str = "*(none activated)*"
     embed.add_field(name="🏷️ Premium Guilds (Nickname Active)", value=guild_lines_str, inline=False)
 
+    # ── Vote discount config ──
+    discount   = cfg.get("vote_discount", 10)
+    has_secret = "✅ Set" if cfg.get("topgg_webhook_secret") else "❌ Not set"
+    embed.add_field(
+        name="🗳️ Vote Settings",
+        value=f"**Discount:** {discount}%  |  **Webhook Secret:** {has_secret}",
+        inline=False
+    )
+
     return embed
 
 
@@ -2006,6 +2101,13 @@ class PremiumManagerView(discord.ui.View):
     @discord.ui.button(label="🔃 Refresh", style=discord.ButtonStyle.primary, row=4)
     async def refresh(self, i: discord.Interaction, _btn: discord.ui.Button):
         await i.response.edit_message(embed=build_premium_embed(), view=self)
+
+    # ── ROW 5: Vote settings ──────────────────────────────────────────────
+    @discord.ui.button(label="🗳️ Set Vote Discount", style=discord.ButtonStyle.secondary, row=4)
+    async def set_vote_discount(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(VoteSettingsModal())
 
 
 class AddPackageModal(discord.ui.Modal, title="➕ Add Premium Package"):
@@ -2209,6 +2311,36 @@ class GuildNickModal(discord.ui.Modal):
                     f"Bot nickname has been reset."),
                 ephemeral=True)
             await i.edit_original_response(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
+
+
+
+class VoteSettingsModal(discord.ui.Modal, title="🗳️ Vote Discount Settings"):
+    discount_input = discord.ui.TextInput(
+        label="Discount % for voters",
+        placeholder="e.g. 10  (means 10% off — enter 0 to disable)",
+        max_length=3
+    )
+    webhook_secret = discord.ui.TextInput(
+        label="top.gg Webhook Secret",
+        placeholder="Secret token from top.gg webhook settings",
+        max_length=100,
+        required=False
+    )
+
+    async def on_submit(self, i: discord.Interaction):
+        try:
+            pct = int(self.discount_input.value.strip())
+            if not (0 <= pct <= 100):
+                raise ValueError
+        except ValueError:
+            return await i.response.send_message(
+                embed=error_embed("Discount must be a number between 0 and 100."), ephemeral=True)
+        cfg["vote_discount"] = pct
+        secret = self.webhook_secret.value.strip()
+        if secret:
+            cfg["topgg_webhook_secret"] = secret
+        save_config(cfg)
+        await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
 @bot.command(name="premium")
@@ -2462,8 +2594,127 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
 # ENTRY POINT
 # ─────────────────────────────────────────────
 
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  TOP.GG VOTE SYSTEM
+#  - Webhook server receives vote events
+#  - Stores vote timestamp per user
+#  - /premium order checks vote → applies discount
+#  - Discount % configurable by owner
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
+
+TOPGG_WEBHOOK_PORT = int(os.getenv("PORT") or os.getenv("TOPGG_WEBHOOK_PORT") or "5000")
+VOTE_COOLDOWN_HOURS = 12   # top.gg vote cooldown
+
+async def start_vote_webhook():
+    """Start aiohttp webhook server to receive top.gg vote events."""
+    try:
+        from aiohttp import web
+    except ImportError:
+        logging.warning("[Vote] aiohttp not installed — webhook server disabled.")
+        return
+
+    async def handle_vote(request: web.Request) -> web.Response:
+        # Verify Authorization header
+        secret = cfg.get("topgg_webhook_secret", "")
+        if secret and request.headers.get("Authorization") != secret:
+            return web.Response(status=401, text="Unauthorized")
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.Response(status=400, text="Bad Request")
+
+        user_id_str = str(data.get("user", ""))
+        if not user_id_str:
+            return web.Response(status=400, text="Missing user")
+
+        # Store vote timestamp
+        cfg.setdefault("votes", {})[user_id_str] = datetime.datetime.utcnow().isoformat()
+        save_config(cfg)
+        logging.info(f"[Vote] User {user_id_str} voted on top.gg")
+
+        # DM the user a thank-you
+        try:
+            uid = int(user_id_str)
+            user = await bot.fetch_user(uid)
+            discount = cfg.get("vote_discount", 10)
+            dm_embed = base_embed(
+                "🗳️ Thanks for voting!",
+                f"Thank you for voting for **JoyCannot** on top.gg! 🎉\n\n"
+                f"As a reward, you get **{discount}% off** your next premium order!\n"
+                f"Use `/premium order` within the next {VOTE_COOLDOWN_HOURS} hours to claim it.\n\n"
+                f"[Vote again in {VOTE_COOLDOWN_HOURS}h](https://top.gg/bot/{bot.user.id}/vote)",
+                color=0x22C55E
+            )
+            await user.send(embed=dm_embed)
+        except Exception:
+            pass
+
+        return web.Response(status=200, text="OK")
+
+    app = web.Application()
+    app.router.add_post("/topgg/vote", handle_vote)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", TOPGG_WEBHOOK_PORT)
+    await site.start()
+    logging.info(f"[Vote] Webhook server started on port {TOPGG_WEBHOOK_PORT}")
+
+
+def get_vote_discount(user_id: int) -> int:
+    """Return discount % if user voted within the cooldown window, else 0."""
+    votes = cfg.get("votes", {})
+    ts_str = votes.get(str(user_id))
+    if not ts_str:
+        return 0
+    try:
+        voted_at = datetime.datetime.fromisoformat(ts_str)
+        elapsed  = (datetime.datetime.utcnow() - voted_at).total_seconds() / 3600
+        if elapsed <= VOTE_COOLDOWN_HOURS:
+            return cfg.get("vote_discount", 10)
+    except Exception:
+        pass
+    return 0
+
+
+@bot.tree.command(name="vote", description="Vote for JoyCannot on top.gg and get a premium discount!")
+async def slash_vote(i: discord.Interaction):
+    discount     = cfg.get("vote_discount", 10)
+    user_discount = get_vote_discount(i.user.id)
+    bot_id       = bot.user.id
+    vote_url     = f"https://top.gg/bot/{bot_id}/vote"
+
+    if user_discount > 0:
+        desc = (
+            f"✅ You **already voted** and have an active **{user_discount}% discount**!\n\n"
+            f"Use `/premium order` now to claim it.\n"
+            f"[Vote again when cooldown expires]({vote_url})"
+        )
+        color = 0x22C55E
+    else:
+        desc = (
+            f"🗳️ **Vote for JoyCannot** on top.gg and get **{discount}% off** premium!\n\n"
+            f"[👉 Click here to vote]({vote_url})\n\n"
+            f"After voting, use `/premium order` within {VOTE_COOLDOWN_HOURS} hours to apply the discount."
+        )
+        color = 0xF59E0B
+
+    embed = base_embed("🗳️ Vote for JoyCannot", desc, color=color)
+    view  = discord.ui.View()
+    view.add_item(discord.ui.Button(label="Vote on top.gg", url=vote_url, style=discord.ButtonStyle.link, emoji="🗳️"))
+    await i.response.send_message(embed=embed, view=view)
+
+
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         raise RuntimeError("DISCORD_TOKEN is not set.")
-    bot.run(token, log_handler=None, reconnect=True)
+
+    async def main():
+        await start_vote_webhook()
+        await bot.start(token)
+
+    import asyncio as _asyncio
+    _asyncio.run(main())
