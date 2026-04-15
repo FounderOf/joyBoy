@@ -1,8 +1,17 @@
 """
 JoyCannot Discord Bot
 Author: JoyCannot Team
-Version: 1.3.0
+Version: 1.4.0
 License: MIT
+
+Changes v1.4.0:
+  - Ticket panel: custom thumbnail (Discord CDN URL) support
+  - Ticket panel: custom footer text + footer icon URL support
+  - Ticket panel: two interaction styles — Button (classic) & Select Menu (dropdown categories)
+  - Select Menu style: up to 3 configurable ticket-type options per panel
+  - Ticket channel name & welcome embed now include the selected ticket type (menu style)
+  - Log embed now shows ticket type when opened via menu
+  - All previous v1.3.0 features preserved without modification
 
 Changes v1.3.0:
   - Payment methods now support real account details (QRIS URL/info, Bank rekening, E-Wallet number)
@@ -1321,17 +1330,38 @@ async def slash_ticket_setup(
         f"**Support Role:** {support_role.mention if support_role else 'Anyone with Manage Channels'}"
     ))
 
-@ticket_group.command(name="panel", description="Send a ticket panel embed with an 'Open Ticket' button to this channel.")
+@ticket_group.command(
+    name="panel",
+    description="Send a ticket panel to this channel — supports button or select-menu style, custom thumbnail & footer."
+)
 @app_commands.describe(
     title="Title shown on the ticket panel embed",
     description="Description text shown on the ticket panel embed",
-    button_label="Label for the button users click to open a ticket"
+    button_label="Label for the open-ticket button (button style) or select-menu placeholder (menu style)",
+    thumbnail_url="Discord CDN image URL for embed thumbnail (e.g. https://cdn.discordapp.com/attachments/...)",
+    footer_text="Custom footer text (leave blank to use the default bot footer)",
+    footer_icon_url="Discord CDN URL for the footer icon (optional, e.g. server icon URL)",
+    style="Panel interaction style — Button (single button) or Menu (select dropdown with ticket categories)",
+    menu_option_1="First ticket-type option shown in the dropdown (menu style only)",
+    menu_option_2="Second ticket-type option shown in the dropdown (menu style only)",
+    menu_option_3="Third ticket-type option shown in the dropdown (menu style only)",
 )
+@app_commands.choices(style=[
+    app_commands.Choice(name="🔘 Button  — single 'Open Ticket' button",     value="button"),
+    app_commands.Choice(name="📋 Menu   — select-menu dropdown with types",  value="menu"),
+])
 async def slash_ticket_panel(
     i: discord.Interaction,
     title: str = "🎫 Support Tickets",
     description: str = "Click the button below to open a support ticket.",
-    button_label: str = "Open Ticket"
+    button_label: str = "Open Ticket",
+    thumbnail_url: str = "",
+    footer_text: str = "",
+    footer_icon_url: str = "",
+    style: str = "button",
+    menu_option_1: str = "",
+    menu_option_2: str = "",
+    menu_option_3: str = "",
 ):
     if not i.user.guild_permissions.manage_guild:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
@@ -1339,17 +1369,85 @@ async def slash_ticket_panel(
     if not gc["ticket"].get("category"):
         return await i.response.send_message(embed=error_embed("Run `/ticket setup` first."), ephemeral=True)
 
-    class TicketView(discord.ui.View):
-        def __init__(self):
-            super().__init__(timeout=None)
-        @discord.ui.button(label=button_label, style=discord.ButtonStyle.primary,
-                           emoji="🎫", custom_id="joy_ticket_open")
-        async def open_ticket(self, interaction: discord.Interaction, _btn):
-            await handle_open_ticket(interaction)
+    # ── Basic URL validation helper ───────────────────────────────────────
+    def _valid_url(url: str) -> bool:
+        return url.strip().startswith("https://")
 
+    # ── Build embed ───────────────────────────────────────────────────────
     embed = base_embed(title, description)
-    await i.response.send_message(embed=embed, view=TicketView())
-    gc["ticket"]["panels"].append({"channel_id": i.channel.id, "title": title})
+
+    if thumbnail_url and _valid_url(thumbnail_url):
+        embed.set_thumbnail(url=thumbnail_url.strip())
+    elif thumbnail_url:
+        return await i.response.send_message(
+            embed=error_embed("❌ `thumbnail_url` must start with `https://`.\n"
+                              "Use a Discord CDN link, e.g. from an attachment."), ephemeral=True)
+
+    if footer_text:
+        icon = footer_icon_url.strip() if (footer_icon_url and _valid_url(footer_icon_url)) else None
+        embed.set_footer(text=footer_text.strip(), icon_url=icon)
+    elif footer_icon_url:
+        return await i.response.send_message(
+            embed=error_embed("❌ `footer_icon_url` requires `footer_text` to be set too."), ephemeral=True)
+
+    # ── Build view based on style ─────────────────────────────────────────
+    if style == "menu":
+        raw_options = [o.strip() for o in [menu_option_1, menu_option_2, menu_option_3] if o.strip()]
+        if not raw_options:
+            return await i.response.send_message(
+                embed=error_embed("❌ Menu style requires at least one option in `menu_option_1`."), ephemeral=True)
+
+        _btn_label_cap = button_label  # captured for the inner class
+
+        class TicketMenuView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=None)
+                select_options = [
+                    discord.SelectOption(label=opt, value=opt, emoji="🎫")
+                    for opt in raw_options
+                ]
+                self.select = discord.ui.Select(
+                    placeholder=_btn_label_cap or "📋 Select ticket type...",
+                    options=select_options,
+                    custom_id="joy_ticket_menu_select",
+                )
+                self.select.callback = self._on_select
+                self.add_item(self.select)
+
+            async def _on_select(self, interaction: discord.Interaction):
+                ticket_type = interaction.data["values"][0]
+                # Reset the select so user can open another type later
+                await handle_open_ticket(interaction, ticket_type=ticket_type)
+
+        view = TicketMenuView()
+
+    else:  # default: button style
+        _btn_lbl = button_label
+
+        class TicketView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=None)
+
+            @discord.ui.button(label=_btn_lbl, style=discord.ButtonStyle.primary,
+                               emoji="🎫", custom_id="joy_ticket_open")
+            async def open_ticket(self, interaction: discord.Interaction, _btn):
+                await handle_open_ticket(interaction)
+
+        view = TicketView()
+
+    await i.response.send_message(embed=embed, view=view)
+
+    # Store extended panel metadata
+    panel_entry = {
+        "channel_id":      i.channel.id,
+        "title":           title,
+        "style":           style,
+        "thumbnail_url":   thumbnail_url.strip() if thumbnail_url else "",
+        "footer_text":     footer_text.strip()   if footer_text   else "",
+        "footer_icon_url": footer_icon_url.strip() if footer_icon_url else "",
+        "menu_options":    [o for o in [menu_option_1, menu_option_2, menu_option_3] if o.strip()],
+    }
+    gc["ticket"]["panels"].append(panel_entry)
     save_config(cfg)
 
 @ticket_group.command(name="close", description="Close and delete this ticket channel. Only usable inside a ticket.")
@@ -1369,7 +1467,11 @@ async def slash_ticket_close(i: discord.Interaction):
 
 bot.tree.add_command(ticket_group)
 
-async def handle_open_ticket(i: discord.Interaction):
+async def handle_open_ticket(i: discord.Interaction, ticket_type: Optional[str] = None):
+    """
+    Open a ticket channel for the interaction user.
+    ticket_type — optional label set by the select-menu (e.g. "Setup Bot Only").
+    """
     gc  = guild_cfg(cfg, i.guild.id)
     uid = str(i.user.id)
 
@@ -1385,7 +1487,9 @@ async def handle_open_ticket(i: discord.Interaction):
     if not category:
         return await i.response.send_message(embed=error_embed("Ticket category not found."), ephemeral=True)
 
-    safe = re.sub(r"[^a-z0-9]", "", i.user.name.lower()) or "user"
+    safe      = re.sub(r"[^a-z0-9]", "", i.user.name.lower()) or "user"
+    type_slug = re.sub(r"[^a-z0-9]", "", (ticket_type or "").lower())[:12]
+    ch_name   = f"ticket-{safe}" + (f"-{type_slug}" if type_slug else "")
 
     # ── Build permission overwrites ───────────────────────────────────────
     ovw = {
@@ -1400,7 +1504,7 @@ async def handle_open_ticket(i: discord.Interaction):
         ovw[support_role] = discord.PermissionOverwrite(
             read_messages=True, send_messages=True, manage_messages=True)
 
-    ch = await i.guild.create_text_channel(f"ticket-{safe}", category=category, overwrites=ovw)
+    ch = await i.guild.create_text_channel(ch_name, category=category, overwrites=ovw)
     gc["active_tickets"][uid] = ch.id
     save_config(cfg)
 
@@ -1410,6 +1514,7 @@ async def handle_open_ticket(i: discord.Interaction):
     class CloseView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=None)
+
         @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger,
                            emoji="🔒", custom_id="joy_ticket_close")
         async def close(self, interaction: discord.Interaction, _btn):
@@ -1426,11 +1531,15 @@ async def handle_open_ticket(i: discord.Interaction):
                     break
             await interaction.channel.delete(reason="Ticket closed.")
 
-    sr_mention = support_role.mention if support_role else ""
-    welcome = base_embed(f"🎫 Ticket — {i.user.display_name}",
+    sr_mention  = support_role.mention if support_role else ""
+    type_label  = f" — {ticket_type}" if ticket_type else ""
+    welcome = base_embed(
+        f"🎫 Ticket — {i.user.display_name}{type_label}",
         f"Hello {i.user.mention}! "
         f"{'Our ' + sr_mention + ' staff' if sr_mention else 'Staff'} will assist you shortly.\n"
-        f"Click **Close Ticket** when resolved.")
+        + (f"**Category:** {ticket_type}\n" if ticket_type else "")
+        + "Click **Close Ticket** when resolved."
+    )
     await ch.send(
         content=sr_mention if sr_mention else None,
         embed=welcome, view=CloseView())
@@ -1439,8 +1548,11 @@ async def handle_open_ticket(i: discord.Interaction):
     if log_id:
         log_ch = i.guild.get_channel(log_id)
         if log_ch:
-            await log_ch.send(embed=info_embed("📋 Ticket Opened",
-                f"**User:** {i.user.mention}\n**Channel:** {ch.mention}"))
+            log_embed = info_embed("📋 Ticket Opened",
+                f"**User:** {i.user.mention}\n"
+                f"**Channel:** {ch.mention}"
+                + (f"\n**Type:** {ticket_type}" if ticket_type else ""))
+            await log_ch.send(embed=log_embed)
 
 # ── PREMIUM (slash) ───────────────────────────
 
