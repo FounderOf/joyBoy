@@ -54,9 +54,11 @@ def load_config() -> dict:
             "premium_commands": [],
             "premium_users":    [],
             "premium_guilds":   [],
-            "vote_discount":    10,          # % discount for voters (owner-configurable)
-            "topgg_webhook_secret": "",      # set via !Joy premium manager
-            "votes": {},                     # user_id → last_vote ISO timestamp
+            "avatar_default":   "",   # URL of normal bot avatar
+            "avatar_premium":   "",   # URL of premium bot avatar
+            "vote_discount":    10,
+            "topgg_webhook_secret": "",
+            "votes": {},
             "payment_methods": {
                 "qris":    {"enabled": True, "image_url": "", "info": ""},
                 "bank":    {"enabled": True, "bank_name": "", "account_number": "", "account_name": ""},
@@ -84,6 +86,8 @@ def load_config() -> dict:
     data.setdefault("premium_commands", [])
     data.setdefault("premium_users",    [])
     data.setdefault("premium_guilds",   [])
+    data.setdefault("avatar_default",   "")
+    data.setdefault("avatar_premium",   "")
     data.setdefault("vote_discount",    10)
     data.setdefault("topgg_webhook_secret", "")
     data.setdefault("votes",            {})
@@ -473,6 +477,34 @@ async def set_guild_premium_nick(guild: discord.Guild, activate: bool):
     except Exception as e:
         logging.error(f"[Premium] Error in {guild.name}: {e}")
 
+
+async def set_bot_avatar(url: str) -> bool:
+    """
+    Fetch image from URL and set it as the bot's global avatar.
+    Returns True on success, False on failure.
+    Rate-limited by Discord: max ~2 times per 10 minutes.
+    """
+    if not url:
+        return False
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    logging.warning(f"[Avatar] Failed to fetch image: HTTP {resp.status}")
+                    return False
+                data = await resp.read()
+        await bot.user.edit(avatar=data)
+        logging.info(f"[Avatar] Bot avatar updated from {url}")
+        return True
+    except discord.HTTPException as e:
+        logging.error(f"[Avatar] Discord error: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"[Avatar] Error: {e}")
+        return False
+
+
 def is_premium_command(cmd_name: str) -> bool:
     return cmd_name in cfg.get("premium_commands", [])
 
@@ -650,6 +682,13 @@ async def on_ready():
             if guild.id in premium_guilds:
                 await set_guild_premium_nick(guild, activate=True)
                 await asyncio.sleep(0.5)
+
+    # ── Restore correct avatar based on premium state ──
+    has_premium = len(cfg.get("premium_guilds", [])) > 0
+    avatar_url  = cfg.get("avatar_premium" if has_premium else "avatar_default", "")
+    if avatar_url:
+        ok = await set_bot_avatar(avatar_url)
+        print(f"[JoyCannot] Avatar {'restored ✅' if ok else 'restore failed ❌'} ({'premium' if has_premium else 'default'})")
 
 
 @bot.event
@@ -1992,6 +2031,19 @@ def build_premium_embed() -> discord.Embed:
         inline=False
     )
 
+    # ── Avatar config ──
+    av_def  = cfg.get("avatar_default", "")
+    av_prem = cfg.get("avatar_premium", "")
+    embed.add_field(
+        name="🖼️ Bot Avatars",
+        value=(
+            f"**Default:** {'✅ Set' if av_def else '❌ Not set'}\n"
+            f"**Premium:** {'✅ Set' if av_prem else '❌ Not set'}\n"
+            f"**Current state:** {'🟡 Premium avatar active' if cfg.get('premium_guilds') else '⚪ Default avatar active'}"
+        ),
+        inline=False
+    )
+
     return embed
 
 
@@ -2108,6 +2160,12 @@ class PremiumManagerView(discord.ui.View):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(VoteSettingsModal())
+
+    @discord.ui.button(label="🖼️ Set Avatars", style=discord.ButtonStyle.secondary, row=4)
+    async def set_avatars(self, i: discord.Interaction, _btn: discord.ui.Button):
+        if not self.check_owner(i):
+            return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
+        await i.response.send_modal(SetAvatarsModal())
 
 
 class AddPackageModal(discord.ui.Modal, title="➕ Add Premium Package"):
@@ -2288,13 +2346,21 @@ class GuildNickModal(discord.ui.Modal):
                     embed=error_embed(f"**{guild.name}** is already activated."), ephemeral=True)
             pg.append(gid)
             save_config(cfg)
-            # Defer so we can do the async nickname change
             await i.response.defer()
             await set_guild_premium_nick(guild, activate=True)
+
+            # ── Switch to premium avatar if this is the FIRST premium guild ──
+            if len(cfg.get("premium_guilds", [])) == 1:
+                avatar_url = cfg.get("avatar_premium", "")
+                if avatar_url:
+                    await set_bot_avatar(avatar_url)
+
             await i.followup.send(
                 embed=success_embed(
-                    f"✅ Premium nickname activated for **{guild.name}**!\n"
-                    f"Bot nickname is now `{PREMIUM_NICK}` in that server."),
+                    f"✅ Premium activated for **{guild.name}**!\n"
+                    f"• Nickname → `{PREMIUM_NICK}`\n"
+                    f"• Role → `{PREMIUM_ROLE_NAME}` (yellow)\n"
+                    f"• Avatar → {'switched to premium 🖼️' if cfg.get('avatar_premium') else 'not set (configure via Set Avatars button)'}"),
                 ephemeral=True)
             await i.edit_original_response(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
         else:
@@ -2305,13 +2371,70 @@ class GuildNickModal(discord.ui.Modal):
             save_config(cfg)
             await i.response.defer()
             await set_guild_premium_nick(guild, activate=False)
+
+            # ── Revert to default avatar if NO premium guilds remain ──────
+            if len(cfg.get("premium_guilds", [])) == 0:
+                avatar_url = cfg.get("avatar_default", "")
+                if avatar_url:
+                    await set_bot_avatar(avatar_url)
+
             await i.followup.send(
                 embed=success_embed(
-                    f"✅ Premium nickname deactivated for **{guild.name}**.\n"
-                    f"Bot nickname has been reset."),
+                    f"✅ Premium deactivated for **{guild.name}**.\n"
+                    f"• Nickname reset\n"
+                    f"• Role removed\n"
+                    f"• Avatar → {'reverted to default 🖼️' if cfg.get('avatar_default') else 'not set'}"),
                 ephemeral=True)
             await i.edit_original_response(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
+
+
+class SetAvatarsModal(discord.ui.Modal, title="🖼️ Set Bot Avatars"):
+    default_url = discord.ui.TextInput(
+        label="Default Avatar URL",
+        placeholder="Image URL shown when NO server has premium active",
+        max_length=300,
+        required=False
+    )
+    premium_url = discord.ui.TextInput(
+        label="Premium Avatar URL",
+        placeholder="Image URL shown when at least 1 server has premium active",
+        max_length=300,
+        required=False
+    )
+
+    async def on_submit(self, i: discord.Interaction):
+        default = self.default_url.value.strip()
+        premium = self.premium_url.value.strip()
+
+        updated = []
+        if default:
+            cfg["avatar_default"] = default
+            updated.append("Default avatar saved")
+        if premium:
+            cfg["avatar_premium"] = premium
+            updated.append("Premium avatar saved")
+
+        if not updated:
+            return await i.response.send_message(
+                embed=error_embed("No URLs provided. Fill in at least one field."), ephemeral=True)
+
+        save_config(cfg)
+
+        # ── Apply immediately based on current premium state ──────────────
+        await i.response.defer()
+        has_premium = len(cfg.get("premium_guilds", [])) > 0
+        if has_premium and premium:
+            ok = await set_bot_avatar(premium)
+            updated.append(f"Premium avatar {'applied ✅' if ok else 'failed to apply ❌'}")
+        elif not has_premium and default:
+            ok = await set_bot_avatar(default)
+            updated.append(f"Default avatar {'applied ✅' if ok else 'failed to apply ❌'}")
+
+        await i.followup.send(
+            embed=success_embed("\n".join(f"• {u}" for u in updated)),
+            ephemeral=True)
+        await i.edit_original_response(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
 class VoteSettingsModal(discord.ui.Modal, title="🗳️ Vote Discount Settings"):
