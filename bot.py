@@ -54,8 +54,8 @@ def load_config() -> dict:
             "premium_commands": [],
             "premium_users":    [],
             "premium_guilds":   [],
-            "avatar_default":   "",   # URL of normal bot avatar
-            "avatar_premium":   "",   # URL of premium bot avatar
+            "avatar_default":   "",
+            "avatar_premium":   "",
             "vote_discount":    10,
             "topgg_webhook_secret": "",
             "votes": {},
@@ -96,6 +96,15 @@ def load_config() -> dict:
         tkt = gc.get("ticket", {})
         if "whitelist_role" in tkt and "support_role" not in tkt:
             tkt["support_role"] = tkt.pop("whitelist_role")
+        # ── Ensure leveling/quest keys exist per guild ────────────────────
+        gc.setdefault("leveling_enabled",   True)
+        gc.setdefault("level_channel",      None)   # channel for level-up notifs
+        gc.setdefault("xp_per_message",     (15, 25))  # [min, max] XP per msg
+        gc.setdefault("xp_cooldown",        60)     # seconds between XP awards
+        gc.setdefault("members_xp",         {})     # uid → {xp, level, last_msg_ts}
+        gc.setdefault("level_roles",        {})     # level_str → role_id reward
+        gc.setdefault("quests",             [])     # list of quest dicts
+        gc.setdefault("member_quests",      {})     # uid → {quest_id → progress}
     save_config(data)
     return data
 
@@ -114,12 +123,21 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
             "ticket": {
                 "category": None,
                 "log_channel": None,
-                "support_role": None,   # role that can see & handle tickets
-                "max_tickets": 1,       # max open tickets per user
+                "support_role": None,
+                "max_tickets": 1,
                 "panels": []
             },
             "warnings": {},
-            "active_tickets": {}
+            "active_tickets": {},
+            # ── Leveling & Quest ──────────────────────────────────────────
+            "leveling_enabled": True,
+            "level_channel":    None,
+            "xp_per_message":   [15, 25],
+            "xp_cooldown":      60,
+            "members_xp":       {},
+            "level_roles":      {},
+            "quests":           [],
+            "member_quests":    {},
         }
         save_config(cfg)
     gc = cfg["guilds"][gid]
@@ -128,6 +146,15 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
     if "whitelist_role" in tkt and "support_role" not in tkt:
         tkt["support_role"] = tkt.pop("whitelist_role")
     tkt.setdefault("max_tickets", 1)
+    # Ensure leveling keys exist for older guild configs
+    gc.setdefault("leveling_enabled", True)
+    gc.setdefault("level_channel",    None)
+    gc.setdefault("xp_per_message",   [15, 25])
+    gc.setdefault("xp_cooldown",      60)
+    gc.setdefault("members_xp",       {})
+    gc.setdefault("level_roles",      {})
+    gc.setdefault("quests",           [])
+    gc.setdefault("member_quests",    {})
     return gc
 
 # ─────────────────────────────────────────────
@@ -748,8 +775,154 @@ async def on_guild_join(guild: discord.Guild):
     await target.send(embed=embed, view=ChannelSelectView())
 
 
-# NOTE: on_message is defined further below in the XP/Leveling section
-# to combine anti-spam + XP/quest processing + prefix routing in one handler.
+@bot.event
+async def on_message(message: discord.Message):
+    """Single on_message: anti-spam + prefix routing."""
+    if message.author.bot:
+        return
+
+    # ── Anti cross-channel spam ───────────────────────────────────────────
+    if message.guild:
+        uid = message.author.id
+        now = discord.utils.utcnow().timestamp()
+
+        # Only track if message has any detectable content
+        has_content = (
+            message.content.strip()
+            or message.attachments
+            or message.embeds
+        )
+
+        if has_content:
+            fp = _spam_fingerprint(message)
+
+            # Init tracker entry for this fingerprint if needed
+            if fp not in spam_tracker[uid]:
+                spam_tracker[uid][fp] = {
+                    "channels":  set(),
+                    "messages":  [],   # list of (channel_id, message_id) to delete
+                    "first_seen": now,
+                }
+
+            entry = spam_tracker[uid][fp]
+
+            # Only count within SPAM_WINDOW
+            if now - entry["first_seen"] <= SPAM_WINDOW:
+                entry["channels"].add(message.channel.id)
+                entry["messages"].append((message.channel.id, message.id))
+                spam_cleanup_times[uid] = now
+
+                # ── PREEMPTIVE DELETE ─────────────────────────────────────
+                # If this fingerprint already appeared in at least 1 other
+                # channel, delete the new message immediately — don't wait
+                # for the full threshold. Spammers send all at once so by
+                # the time we hit threshold the damage is already done.
+                channel_count = len(entry["channels"])
+                if channel_count >= 2:
+                    await _try_delete(message.channel, message.id)
+
+                if channel_count >= SPAM_THRESHOLD:
+                    # ── Delete all remaining tracked spam messages ────────
+                    delete_tasks = []
+                    for ch_id, msg_id in entry["messages"]:
+                        ch = message.guild.get_channel(ch_id)
+                        if ch:
+                            delete_tasks.append(_try_delete(ch, msg_id))
+                    await asyncio.gather(*delete_tasks)
+
+                    # ── Ban the spammer ───────────────────────────────────
+                    banned = False
+                    try:
+                        await message.guild.ban(
+                            message.author,
+                            reason="[JoyCannot] Cross-channel spam (auto-detected).",
+                            delete_message_days=1
+                        )
+                        banned = True
+                    except discord.Forbidden:
+                        pass
+
+                    # ── Professional log embed ────────────────────────────
+                    gc     = guild_cfg(cfg, message.guild.id)
+                    log_id = gc["ticket"].get("log_channel")
+                    if log_id:
+                        log_ch = message.guild.get_channel(log_id)
+                        if log_ch:
+                            content_type = (
+                                "🖼️ Image/File" if message.attachments
+                                else "🔗 Link/Invite" if any(
+                                    x in (message.content or "") for x in
+                                    ["http", "discord.gg", "discord.com/invite"])
+                                else "💬 Text"
+                            )
+                            log_embed = discord.Embed(
+                                title="🚨 Anti-Spam — User Actioned",
+                                color=0xEF4444,
+                                timestamp=discord.utils.utcnow()
+                            )
+                            log_embed.set_author(
+                                name=str(message.author),
+                                icon_url=message.author.display_avatar.url
+                            )
+                            log_embed.add_field(
+                                name="👤 User",
+                                value=f"{message.author.mention}\n`{message.author.id}`",
+                                inline=True
+                            )
+                            log_embed.add_field(
+                                name="⚡ Action",
+                                value="🔨 **Banned**" if banned else "⚠️ Kicked (no perm)",
+                                inline=True
+                            )
+                            log_embed.add_field(
+                                name="📊 Spam Stats",
+                                value=(
+                                    f"**Channels hit:** {len(entry['channels'])}\n"
+                                    f"**Messages deleted:** {len(entry['messages'])}\n"
+                                    f"**Content:** {content_type}\n"
+                                    f"**Window:** {SPAM_WINDOW}s"
+                                ),
+                                inline=True
+                            )
+                            # Show a snippet of the spam content
+                            snippet = (message.content or "")[:100]
+                            if snippet:
+                                log_embed.add_field(
+                                    name="📝 Content Preview",
+                                    value=f"```{snippet}```",
+                                    inline=False
+                                )
+                            elif message.attachments:
+                                log_embed.add_field(
+                                    name="📎 Attachment",
+                                    value=message.attachments[0].filename,
+                                    inline=False
+                                )
+                            log_embed.set_footer(text="JoyCannot Anti-Spam System")
+                            try:
+                                await log_ch.send(embed=log_embed)
+                            except Exception:
+                                pass
+
+                    spam_tracker.pop(uid, None)
+                    return
+            else:
+                # Window expired for this fingerprint — reset it
+                spam_tracker[uid][fp] = {
+                    "channels":   {message.channel.id},
+                    "messages":   [(message.channel.id, message.id)],
+                    "first_seen": now,
+                }
+                spam_cleanup_times[uid] = now
+
+    # ── Prefix command routing ────────────────────────────────────────────
+    await bot.process_commands(message)
+
+    # ── XP gain (runs after spam check — if spammer was banned we already returned) ──
+    if message.guild and not message.author.bot:
+        leveled_up, new_level = await process_xp_gain(message)
+        if leveled_up:
+            await send_levelup_notification(message, new_level)
 
 
 async def _try_delete(channel: discord.TextChannel, message_id: int):
@@ -762,8 +935,223 @@ async def _try_delete(channel: discord.TextChannel, message_id: int):
 
 
 # ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  LEVELING SYSTEM
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
+
+import random
+import math
+
+def xp_for_level(level: int) -> int:
+    """Total XP required to reach a given level. Formula: 5*(lvl^2) + 50*lvl + 100."""
+    return int(5 * (level ** 2) + 50 * level + 100)
+
+def level_from_xp(total_xp: int) -> int:
+    """Calculate level from total XP."""
+    level = 0
+    while total_xp >= xp_for_level(level):
+        total_xp -= xp_for_level(level)
+        level += 1
+    return level
+
+def xp_progress(total_xp: int) -> tuple[int, int, int]:
+    """Returns (current_level, xp_in_current_level, xp_needed_for_next_level)."""
+    level = 0
+    remaining = total_xp
+    while remaining >= xp_for_level(level):
+        remaining -= xp_for_level(level)
+        level += 1
+    return level, remaining, xp_for_level(level)
+
+def make_xp_bar(current: int, needed: int, length: int = 12) -> str:
+    """Generate a visual XP progress bar."""
+    filled = int((current / max(needed, 1)) * length)
+    bar    = "█" * filled + "░" * (length - filled)
+    return f"`[{bar}]`"
+
+def get_member_xp(gc: dict, uid: str) -> dict:
+    """Get or create member XP data."""
+    mx = gc.setdefault("members_xp", {})
+    if uid not in mx:
+        mx[uid] = {"xp": 0, "level": 0, "last_msg_ts": 0.0, "messages": 0}
+    mx[uid].setdefault("messages", 0)
+    return mx[uid]
+
+async def process_xp_gain(message: discord.Message):
+    """Award XP for a message. Returns (leveled_up, new_level) if leveled up, else (False, 0)."""
+    if not message.guild or message.author.bot:
+        return False, 0
+    gc = guild_cfg(cfg, message.guild.id)
+    if not gc.get("leveling_enabled", True):
+        return False, 0
+
+    uid      = str(message.author.id)
+    data     = get_member_xp(gc, uid)
+    now      = discord.utils.utcnow().timestamp()
+    cooldown = gc.get("xp_cooldown", 60)
+
+    # Respect cooldown
+    if now - data["last_msg_ts"] < cooldown:
+        return False, 0
+
+    xp_range = gc.get("xp_per_message", [15, 25])
+    xp_gain  = random.randint(int(xp_range[0]), int(xp_range[1]))
+    old_level = data["level"]
+
+    data["xp"]          += xp_gain
+    data["last_msg_ts"]  = now
+    data["messages"]    += 1
+    new_level = level_from_xp(data["xp"])
+    data["level"] = new_level
+    save_config(cfg)
+
+    # Update quest progress for message-based quests
+    await update_quest_progress(gc, uid, "send_messages", 1)
+
+    if new_level > old_level:
+        return True, new_level
+    return False, 0
+
+async def send_levelup_notification(message: discord.Message, new_level: int):
+    """Send a level-up embed to the configured level channel (or current channel)."""
+    gc         = guild_cfg(cfg, message.guild.id)
+    ch_id      = gc.get("level_channel")
+    target     = message.guild.get_channel(ch_id) if ch_id else message.channel
+
+    if not target:
+        return
+
+    uid   = str(message.author.id)
+    data  = get_member_xp(gc, uid)
+    _, cx, nx = xp_progress(data["xp"])
+    bar   = make_xp_bar(cx, nx)
+
+    embed = discord.Embed(
+        title="⬆️ Level Up!",
+        description=f"Selamat {message.author.mention}! Kamu naik ke **Level {new_level}**! 🎉",
+        color=0xF59E0B,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="📊 Progress", value=f"{bar} {cx}/{nx} XP", inline=False)
+    embed.add_field(name="🏆 Level",    value=str(new_level),         inline=True)
+    embed.add_field(name="✉️ Messages", value=str(data["messages"]),  inline=True)
+    embed.set_thumbnail(url=message.author.display_avatar.url)
+    embed.set_footer(text="JoyCannot Leveling System")
+
+    try:
+        await target.send(embed=embed)
+    except discord.Forbidden:
+        pass
+
+    # Award level role if configured
+    role_id = gc.get("level_roles", {}).get(str(new_level))
+    if role_id:
+        role = message.guild.get_role(int(role_id))
+        if role:
+            try:
+                await message.author.add_roles(role, reason=f"Level {new_level} reward")
+            except discord.Forbidden:
+                pass
+
+
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  QUEST SYSTEM
+# ══════════════════════════════════════════
+# Quests are per-guild. Each quest has:
+#   id, name, description, type, target (int), reward_xp, reward_text, active
+# Types: send_messages | reactions_given | days_active
+# ─────────────────────────────────────────────
+
+QUEST_TYPES = {
+    "send_messages":  "Send {target} messages",
+    "reactions_given":"Give {target} reactions",
+    "days_active":    "Be active for {target} days",
+}
+
+def get_member_quest_progress(gc: dict, uid: str, quest_id: str) -> int:
+    """Get progress for a specific quest."""
+    return gc.get("member_quests", {}).get(uid, {}).get(quest_id, 0)
+
+async def update_quest_progress(gc: dict, uid: str, quest_type: str, increment: int):
+    """Increment progress on all matching active quests for a user."""
+    quests = gc.get("quests", [])
+    member_quests = gc.setdefault("member_quests", {})
+    user_q = member_quests.setdefault(uid, {})
+    save_needed = False
+
+    for quest in quests:
+        if not quest.get("active", True):
+            continue
+        if quest.get("type") != quest_type:
+            continue
+        qid     = quest["id"]
+        target  = quest.get("target", 1)
+        current = user_q.get(qid, 0)
+        if current >= target:
+            continue  # Already completed
+
+        user_q[qid] = current + increment
+        save_needed = True
+
+        if user_q[qid] >= target:
+            # Quest completed!
+            user_q[qid] = target  # cap
+            await _complete_quest(gc, uid, quest)
+
+    if save_needed:
+        save_config(cfg)
+
+async def _complete_quest(gc: dict, uid: str, quest: dict):
+    """Handle quest completion: award XP, notify user if possible."""
+    reward_xp = quest.get("reward_xp", 0)
+    if reward_xp > 0:
+        data         = get_member_xp(gc, uid)
+        old_level    = data["level"]
+        data["xp"]  += reward_xp
+        new_level    = level_from_xp(data["xp"])
+        data["level"] = new_level
+
+    # Try to find the guild and notify in level channel
+    for guild in bot.guilds:
+        gc_check = cfg["guilds"].get(str(guild.id))
+        if gc_check is gc or gc_check == gc:
+            member = guild.get_member(int(uid))
+            ch_id  = gc.get("level_channel")
+            ch     = guild.get_channel(ch_id) if ch_id else None
+            if ch and member:
+                embed = discord.Embed(
+                    title="🏆 Quest Completed!",
+                    description=f"{member.mention} completed the quest **{quest['name']}**!",
+                    color=0x22C55E,
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.add_field(name="📋 Quest",      value=quest.get("description", ""),  inline=False)
+                if reward_xp:
+                    embed.add_field(name="⭐ XP Reward", value=f"+{reward_xp} XP",         inline=True)
+                if quest.get("reward_text"):
+                    embed.add_field(name="🎁 Reward",   value=quest["reward_text"],         inline=True)
+                embed.set_thumbnail(url=member.display_avatar.url)
+                embed.set_footer(text="JoyCannot Quest System")
+                try:
+                    await ch.send(embed=embed)
+                except Exception:
+                    pass
+            break
+
+
+# ─────────────────────────────────────────────
 # BACKGROUND TASKS
 # ─────────────────────────────────────────────
+
+@bot.event
+async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
+    """Track reactions given for quest progress."""
+    if user.bot or not reaction.message.guild:
+        return
+    gc = guild_cfg(cfg, reaction.message.guild.id)
+    await update_quest_progress(gc, str(user.id), "reactions_given", 1)
 
 @tasks.loop(seconds=10)
 async def cleanup_spam_cache():
@@ -932,6 +1320,14 @@ async def do_help(reply_fn):
     ), inline=False)
     embed.add_field(name="💎 Premium", value=(
         f"{lbl('premium info')} · {lbl('premium order')}"
+    ), inline=False)
+    embed.add_field(name="⭐ Leveling", value=(
+        f"{lbl('rank')} · {lbl('leaderboard')}\n"
+        f"{lbl('level rank')} · {lbl('level leaderboard')} · {lbl('level setchannel')}\n"
+        f"{lbl('xp add')} · {lbl('xp remove')} · {lbl('xp set')} · {lbl('xp setlevel')}"
+    ), inline=False)
+    embed.add_field(name="📋 Quests", value=(
+        f"{lbl('quest list')} · {lbl('quest create')} · {lbl('quest delete')} · {lbl('quest toggle')}"
     ), inline=False)
     embed.add_field(name="👑 Owner Only (prefix)", value=(
         "`!Joy maintenance` · `!Joy premium` · `!Joy setchannel`"
@@ -2882,963 +3278,358 @@ async def slash_vote(i: discord.Interaction):
 
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
-#  XP / LEVELING SYSTEM  (Arcane-style)
-#  + QUEST SYSTEM
+#  LEVELING SLASH COMMANDS
 # ══════════════════════════════════════════
 # ─────────────────────────────────────────────
 
-XP_DATA_PATH   = "data/xp.json"
-QUEST_DATA_PATH = "data/quests.json"
+xp_group = app_commands.Group(name="xp", description="Manage XP and levels for server members.")
 
-# ── XP Config ─────────────────────────────
-XP_PER_MESSAGE_MIN = 15
-XP_PER_MESSAGE_MAX = 25
-XP_COOLDOWN_SECS   = 60   # per-user cooldown between XP gains
-xp_cooldowns: dict[int, float] = {}   # uid → last_xp_time
-
-def xp_for_level(level: int) -> int:
-    """Total XP needed to reach a given level (from 0)."""
-    return 5 * (level ** 2) + 50 * level + 100
-
-def level_from_xp(total_xp: int) -> int:
-    """Calculate current level from total XP."""
-    level = 0
-    while total_xp >= xp_for_level(level):
-        total_xp -= xp_for_level(level)
-        level += 1
-    return level
-
-def xp_in_current_level(total_xp: int) -> tuple[int, int]:
-    """Returns (xp_into_current_level, xp_needed_for_next_level)."""
-    level = 0
-    while total_xp >= xp_for_level(level):
-        total_xp -= xp_for_level(level)
-        level += 1
-    return total_xp, xp_for_level(level)
-
-def load_xp_data() -> dict:
-    os.makedirs("data", exist_ok=True)
-    if not os.path.exists(XP_DATA_PATH):
-        return {}
-    with open(XP_DATA_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_xp_data(data: dict):
-    os.makedirs("data", exist_ok=True)
-    with open(XP_DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-def get_user_xp(data: dict, guild_id: int, user_id: int) -> dict:
-    gid = str(guild_id)
-    uid = str(user_id)
-    data.setdefault(gid, {})
-    data[gid].setdefault(uid, {"xp": 0, "level": 0, "total_messages": 0})
-    return data[gid][uid]
-
-# ── Quest Config ───────────────────────────
-# ── Default built-in quests (always present) ──
-QUEST_DEFINITIONS = [
-    # id, name, description, type, target, reward_xp, reward_desc, reset (daily/weekly)
-    {"id": "send_5",    "name": "💬 Chatterer",       "desc": "Send 5 messages",             "type": "messages",   "target": 5,   "reward_xp": 50,  "reward": "50 XP",  "reward_type": "xp",     "reset": "daily"},
-    {"id": "send_25",   "name": "🗣️ Talker",          "desc": "Send 25 messages",            "type": "messages",   "target": 25,  "reward_xp": 150, "reward": "150 XP", "reward_type": "xp",     "reset": "daily"},
-    {"id": "react_3",   "name": "😄 Reactor",         "desc": "React to 3 messages",         "type": "reactions",  "target": 3,   "reward_xp": 75,  "reward": "75 XP",  "reward_type": "xp",     "reset": "daily"},
-    {"id": "react_10",  "name": "🔥 Reaction Master", "desc": "React to 10 messages",        "type": "reactions",  "target": 10,  "reward_xp": 200, "reward": "200 XP", "reward_type": "xp",     "reset": "weekly"},
-    {"id": "send_100",  "name": "📣 Active Member",   "desc": "Send 100 messages this week", "type": "messages",   "target": 100, "reward_xp": 500, "reward": "500 XP", "reward_type": "xp",     "reset": "weekly"},
-    {"id": "help_10",   "name": "🤝 Helper",          "desc": "Reply to 10 messages",        "type": "replies",    "target": 10,  "reward_xp": 300, "reward": "300 XP", "reward_type": "xp",     "reset": "weekly"},
-    {"id": "send_50",   "name": "🌟 Contributor",     "desc": "Send 50 messages this week",  "type": "messages",   "target": 50,  "reward_xp": 350, "reward": "350 XP", "reward_type": "xp",     "reset": "weekly"},
-    {"id": "early_5",   "name": "🌅 Early Bird",      "desc": "Send 5 msgs before 9 AM WIB", "type": "early_msgs", "target": 5,   "reward_xp": 100, "reward": "100 XP", "reward_type": "xp",     "reset": "daily"},
-]
-
-# ─────────────────────────────────────────────
-# CUSTOM QUEST + REDEEM CODE SYSTEM
-# ─────────────────────────────────────────────
-# Storage layout:
-#   data/custom_quests.json  → per-guild custom quest definitions
-#   data/redeem_codes.json   → pool of codes per quest (guild-scoped)
-#   data/quests.json         → per-user progress (existing, unchanged)
-#
-# Custom quest reward types:
-#   "xp"     → award reward_xp directly
-#   "code"   → generate & DM a unique redeem code from the pool
-#   "both"   → award XP AND send a code
-# ─────────────────────────────────────────────
-
-CUSTOM_QUEST_PATH = "data/custom_quests.json"
-REDEEM_CODE_PATH  = "data/redeem_codes.json"
-
-def load_custom_quests() -> dict:
-    os.makedirs("data", exist_ok=True)
-    if not os.path.exists(CUSTOM_QUEST_PATH):
-        return {}
-    with open(CUSTOM_QUEST_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_custom_quests(data: dict):
-    os.makedirs("data", exist_ok=True)
-    with open(CUSTOM_QUEST_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-def load_redeem_codes() -> dict:
-    os.makedirs("data", exist_ok=True)
-    if not os.path.exists(REDEEM_CODE_PATH):
-        return {}
-    with open(REDEEM_CODE_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_redeem_codes(data: dict):
-    os.makedirs("data", exist_ok=True)
-    with open(REDEEM_CODE_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-def get_all_quests_for_guild(guild_id: int) -> list:
-    """Merge built-in + custom quests for this guild."""
-    custom = load_custom_quests()
-    gid    = str(guild_id)
-    guild_customs = custom.get(gid, [])
-    return QUEST_DEFINITIONS + guild_customs
-
-def pop_redeem_code(guild_id: int, quest_id: str) -> Optional[str]:
-    """
-    Pop one unused code from the pool for this quest.
-    Returns the code string, or None if pool is empty.
-    """
-    codes = load_redeem_codes()
-    gid   = str(guild_id)
-    pool  = codes.get(gid, {}).get(quest_id, [])
-    available = [c for c in pool if not c.get("used")]
-    if not available:
-        return None
-    chosen = available[0]
-    chosen["used"] = True
-    save_redeem_codes(codes)
-    return chosen["code"]
-
-def generate_auto_code(prefix: str = "JOY") -> str:
-    """Generate a random redeem code like JOY-A3X9-KZ12."""
-    import random, string
-    chars = string.ascii_uppercase + string.digits
-    part1 = "".join(random.choices(chars, k=4))
-    part2 = "".join(random.choices(chars, k=4))
-    return f"{prefix}-{part1}-{part2}"
-
-def load_quest_data() -> dict:
-    os.makedirs("data", exist_ok=True)
-    if not os.path.exists(QUEST_DATA_PATH):
-        return {}
-    with open(QUEST_DATA_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_quest_data(data: dict):
-    os.makedirs("data", exist_ok=True)
-    with open(QUEST_DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-def get_quest_period_key(reset: str) -> str:
-    """Returns a period key string for daily or weekly reset tracking."""
-    now = datetime.datetime.now(WIB)
-    if reset == "daily":
-        return now.strftime("%Y-%m-%d")
-    else:  # weekly
-        return now.strftime("%Y-W%W")
-
-def get_user_quest_progress(qdata: dict, guild_id: int, user_id: int, quest_id: str, reset: str) -> dict:
-    gid = str(guild_id)
-    uid = str(user_id)
-    period = get_quest_period_key(reset)
-    qdata.setdefault(gid, {}).setdefault(uid, {}).setdefault(quest_id, {})
-    entry = qdata[gid][uid][quest_id]
-    # Reset if period changed
-    if entry.get("period") != period:
-        entry["period"]    = period
-        entry["progress"]  = 0
-        entry["completed"] = False
-        entry["claimed"]   = False
-    return entry
-
-
-async def grant_quest_reward(quest: dict, member: discord.Member, guild: discord.Guild):
-    """
-    Grant the reward for a completed quest:
-    - 'xp'   → add XP silently (caller already does this for built-ins)
-    - 'code' → DM a unique redeem code from pool (or auto-generate)
-    - 'both' → XP + code
-    Sends a DM with reward details.
-    """
-    reward_type = quest.get("reward_type", "xp")
-    reward_xp   = quest.get("reward_xp", 0)
-    reward_desc = quest.get("reward", "XP")
-    quest_name  = quest["name"]
-
-    dm_lines = [f"**{quest_name}**\n{quest.get('desc','')}\n"]
-
-    # ── XP reward ────────────────────────────────────────────────────────
-    if reward_type in ("xp", "both") and reward_xp > 0:
-        xp_data  = load_xp_data()
-        user_rec = get_user_xp(xp_data, guild.id, member.id)
-        old_lv   = user_rec["level"]
-        user_rec["xp"] += reward_xp
-        new_lv   = level_from_xp(user_rec["xp"])
-        user_rec["level"] = new_lv
-        save_xp_data(xp_data)
-        dm_lines.append(f"⭐ **+{reward_xp} XP** awarded!")
-        if new_lv > old_lv:
-            gc = guild_cfg(cfg, guild.id)
-            notif_ch_id = gc.get("levelup_channel") or gc.get("main_channel")
-            notif_ch = guild.get_channel(notif_ch_id) if notif_ch_id else None
-            if notif_ch:
-                try:
-                    await notif_ch.send(f"{member.mention} Mencapai Level **{new_lv}**. KELAZZZ👑!")
-                except Exception:
-                    pass
-
-    # ── Code reward ───────────────────────────────────────────────────────
-    if reward_type in ("code", "both"):
-        code = pop_redeem_code(guild.id, quest["id"])
-        if not code:
-            # Auto-generate if pool is empty
-            code = generate_auto_code()
-        dm_lines.append(f"🎟️ **Redeem Code:** `{code}`")
-        if reward_desc and reward_type == "code":
-            dm_lines.append(f"🎁 Hadiah: **{reward_desc}**")
-        dm_lines.append("\n📌 Gunakan kode ini sesuai instruksi dari admin server.")
-
-    if reward_type not in ("xp", "code", "both"):
-        dm_lines.append(f"🎁 Reward: **{reward_desc}**")
-
-    try:
-        await member.send(embed=base_embed(
-            "🎯 Quest Completed!",
-            "\n".join(dm_lines),
-            color=0x22C55E
-        ))
-    except Exception:
-        pass
-
-
-# ── XP / Quest processing on message ──────────
-async def process_xp_and_quests(message: discord.Message):
-    """Award XP and update quest progress on every message."""
-    if message.author.bot or not message.guild:
-        return
-
-    xp_data    = load_xp_data()
-    quest_data = load_quest_data()
-    uid        = message.author.id
-    gid        = message.guild.id
-    now        = discord.utils.utcnow().timestamp()
-
-    # ── XP gain (with cooldown) ───────────────────
-    last_xp = xp_cooldowns.get(uid, 0)
-    if now - last_xp >= XP_COOLDOWN_SECS:
-        import random
-        gained_xp = random.randint(XP_PER_MESSAGE_MIN, XP_PER_MESSAGE_MAX)
-        xp_cooldowns[uid] = now
-
-        user_rec = get_user_xp(xp_data, gid, uid)
-        old_level = user_rec["level"]
-        user_rec["xp"] += gained_xp
-        user_rec["total_messages"] = user_rec.get("total_messages", 0) + 1
-        new_level = level_from_xp(user_rec["xp"])
-        user_rec["level"] = new_level
-        save_xp_data(xp_data)
-
-        # ── Level up notification ─────────────────────
-        if new_level > old_level:
-            gc = guild_cfg(cfg, gid)
-            notif_ch_id = gc.get("levelup_channel") or gc.get("main_channel")
-            notif_ch = message.guild.get_channel(notif_ch_id) if notif_ch_id else None
-            if not notif_ch:
-                notif_ch = message.channel
-            try:
-                await notif_ch.send(
-                    f"{message.author.mention} Mencapai Level **{new_level}**. KELAZZZ👑!"
-                )
-            except Exception:
-                pass
-
-    # ── Quest progress ────────────────────────────
-    now_wib    = datetime.datetime.now(WIB)
-    all_quests = get_all_quests_for_guild(gid)
-    for quest in all_quests:
-        entry = get_user_quest_progress(quest_data, gid, uid, quest["id"], quest["reset"])
-        if entry["completed"]:
-            continue
-
-        progressed = False
-        if quest["type"] == "messages":
-            entry["progress"] += 1
-            progressed = True
-        elif quest["type"] == "replies" and message.reference:
-            entry["progress"] += 1
-            progressed = True
-        elif quest["type"] == "early_msgs" and now_wib.hour < 9:
-            entry["progress"] += 1
-            progressed = True
-
-        if progressed and entry["progress"] >= quest["target"]:
-            entry["completed"] = True
-            entry["claimed"]   = True
-            save_quest_data(quest_data)
-            # Grant reward (XP + optional code) via unified function
-            await grant_quest_reward(quest, message.author, message.guild)
-            return  # re-save happens inside grant_quest_reward
-
-    save_quest_data(quest_data)
-
-
-async def process_reaction_quests(guild: discord.Guild, user: discord.Member):
-    """Update reaction-type quests when a user adds a reaction."""
-    if user.bot:
-        return
-    quest_data = load_quest_data()
-    gid        = guild.id
-    uid        = user.id
-    all_quests = get_all_quests_for_guild(gid)
-    for quest in all_quests:
-        if quest["type"] != "reactions":
-            continue
-        entry = get_user_quest_progress(quest_data, gid, uid, quest["id"], quest["reset"])
-        if entry["completed"]:
-            continue
-        entry["progress"] += 1
-        if entry["progress"] >= quest["target"]:
-            entry["completed"] = True
-            entry["claimed"]   = True
-            save_quest_data(quest_data)
-            await grant_quest_reward(quest, user, guild)
-            return
-    save_quest_data(quest_data)
-
-
-# ── Hook reaction event ────────────────────────
-@bot.event
-async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
-    if reaction.message.guild:
-        member = reaction.message.guild.get_member(user.id)
-        if member:
-            await process_reaction_quests(reaction.message.guild, member)
-
-
-# ── /rank command ──────────────────────────────
-@bot.tree.command(name="rank", description="View your current XP, level, and progress.")
-@app_commands.describe(member="Member to check (leave blank for yourself)")
-async def slash_rank(i: discord.Interaction, member: Optional[discord.Member] = None):
-    target = member or i.user
-    xp_data  = load_xp_data()
-    user_rec = get_user_xp(xp_data, i.guild.id, target.id)
-    total_xp = user_rec["xp"]
-    level    = user_rec["level"]
-    xp_now, xp_need = xp_in_current_level(total_xp)
-    msgs     = user_rec.get("total_messages", 0)
-
-    # Leaderboard rank
-    gid = str(i.guild.id)
-    guild_data = xp_data.get(gid, {})
-    sorted_users = sorted(guild_data.items(), key=lambda x: x[1].get("xp", 0), reverse=True)
-    rank = next((idx+1 for idx, (uid, _) in enumerate(sorted_users) if uid == str(target.id)), "?")
-
-    # Progress bar
-    filled = int((xp_now / xp_need) * 20) if xp_need > 0 else 20
-    bar = "█" * filled + "░" * (20 - filled)
-
-    embed = base_embed(f"⭐ {target.display_name}'s Rank")
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.add_field(name="🏆 Rank",     value=f"#{rank}",               inline=True)
-    embed.add_field(name="📊 Level",    value=str(level),                inline=True)
-    embed.add_field(name="✉️ Messages", value=str(msgs),                  inline=True)
-    embed.add_field(name="⭐ Total XP", value=str(total_xp),             inline=True)
-    embed.add_field(name="📈 Progress", value=f"{xp_now}/{xp_need} XP", inline=True)
-    embed.add_field(name="━━━━━━━━━━━━━━━━━━━━━━",
-                    value=f"`[{bar}]`", inline=False)
-    await i.response.send_message(embed=embed)
-
-
-# ── /leaderboard command ───────────────────────
-@bot.tree.command(name="leaderboard", description="View the top 10 members by XP on this server.")
-async def slash_leaderboard(i: discord.Interaction):
-    xp_data    = load_xp_data()
-    gid        = str(i.guild.id)
-    guild_data = xp_data.get(gid, {})
-    if not guild_data:
-        return await i.response.send_message(embed=info_embed("📊 Leaderboard", "No XP data yet!"))
-
-    sorted_users = sorted(guild_data.items(), key=lambda x: x[1].get("xp", 0), reverse=True)[:10]
-    lines = []
-    medals = ["🥇","🥈","🥉"]
-    for idx, (uid, rec) in enumerate(sorted_users):
-        member = i.guild.get_member(int(uid))
-        name   = member.display_name if member else f"User {uid}"
-        medal  = medals[idx] if idx < 3 else f"**#{idx+1}**"
-        lines.append(f"{medal} {name} — Level **{rec.get('level',0)}** · {rec.get('xp',0)} XP")
-
-    embed = base_embed("🏆 XP Leaderboard", "\n".join(lines))
-    await i.response.send_message(embed=embed)
-
-
-# ── /quest commands ────────────────────────────
-quest_group = app_commands.Group(name="quest", description="View and manage your daily/weekly quests.")
-
-@quest_group.command(name="list", description="Show your current quest progress (daily & weekly).")
-async def slash_quest_list(i: discord.Interaction):
-    quest_data = load_quest_data()
-    uid        = i.user.id
-    gid        = i.guild.id
-    all_quests = get_all_quests_for_guild(gid)
-
-    daily_lines  = []
-    weekly_lines = []
-
-    for quest in all_quests:
-        entry    = get_user_quest_progress(quest_data, gid, uid, quest["id"], quest["reset"])
-        progress = min(entry["progress"], quest["target"])
-        done     = entry["completed"]
-        bar_len  = 10
-        filled   = int((progress / quest["target"]) * bar_len)
-        bar      = "█" * filled + "░" * (bar_len - filled)
-        status   = "✅" if done else "⬜"
-        rtype    = quest.get("reward_type", "xp")
-        reward_icon = "⭐" if rtype == "xp" else "🎟️" if rtype == "code" else "⭐🎟️"
-        line = (
-            f"{status} **{quest['name']}**\n"
-            f"┗ {quest['desc']} | `[{bar}]` {progress}/{quest['target']}\n"
-            f"┗ {reward_icon} {quest['reward']}"
-        )
-        if quest["reset"] == "daily":
-            daily_lines.append(line)
-        else:
-            weekly_lines.append(line)
-
-    save_quest_data(quest_data)
-
-    embed = base_embed("🎯 Your Quests", "Complete quests to earn rewards!")
-    embed.add_field(name="☀️ Daily Quests",  value="\n\n".join(daily_lines)  or "None", inline=False)
-    embed.add_field(name="📅 Weekly Quests", value="\n\n".join(weekly_lines) or "None", inline=False)
-    embed.set_footer(text="Daily resets midnight WIB • Weekly resets Monday • ⭐=XP 🎟️=Code")
-    await i.response.send_message(embed=embed)
-
-
-@quest_group.command(name="info", description="Show info about the quest system and reward types.")
-async def slash_quest_info(i: discord.Interaction):
-    embed = base_embed(
-        "📋 Quest System Info",
-        "Complete Discord activities to earn rewards!\n\n"
-        "**Quest Types:**\n"
-        "• 💬 **Messages** — Send messages in any channel\n"
-        "• 😄 **Reactions** — React to messages\n"
-        "• 🤝 **Replies** — Reply to other members\n"
-        "• 🌅 **Early Bird** — Send messages before 9 AM WIB\n\n"
-        "**Reward Types:**\n"
-        "• ⭐ **XP** — Langsung ditambah ke level kamu\n"
-        "• 🎟️ **Code** — Kode redeem dikirim lewat DM\n"
-        "• ⭐🎟️ **Both** — XP + kode redeem sekaligus\n\n"
-        "Gunakan `/quest list` untuk lihat progress."
-    )
-    await i.response.send_message(embed=embed)
-
-
-# ── Quest management (admin) ──────────────────────────────────────────────
-quest_admin = app_commands.Group(
-    name="questadmin",
-    description="Manage custom quests and redeem codes. (Requires Manage Server)"
-)
-
-@quest_admin.command(name="add", description="Add a custom quest with XP, code, or both as reward.")
-@app_commands.describe(
-    name="Quest name (e.g. 'VIP Member')",
-    desc="Quest description shown to users",
-    quest_type="Activity type to track",
-    target="How many times to complete the activity",
-    reset="When the quest resets",
-    reward_type="Type of reward",
-    reward_xp="XP to award (used if reward_type is xp or both)",
-    reward_label="Reward description shown to users (e.g. 'Nitro 1 Month')"
-)
-@app_commands.choices(
-    quest_type=[
-        app_commands.Choice(name="Messages (send messages)", value="messages"),
-        app_commands.Choice(name="Reactions (add reactions)", value="reactions"),
-        app_commands.Choice(name="Replies (reply to messages)", value="replies"),
-        app_commands.Choice(name="Early Bird (before 9 AM WIB)", value="early_msgs"),
-    ],
-    reset=[
-        app_commands.Choice(name="Daily", value="daily"),
-        app_commands.Choice(name="Weekly", value="weekly"),
-    ],
-    reward_type=[
-        app_commands.Choice(name="⭐ XP only", value="xp"),
-        app_commands.Choice(name="🎟️ Redeem code only", value="code"),
-        app_commands.Choice(name="⭐🎟️ XP + Redeem code", value="both"),
-    ]
-)
-async def slash_quest_add(
-    i: discord.Interaction,
-    name: str,
-    desc: str,
-    quest_type: str,
-    target: int,
-    reset: str,
-    reward_type: str,
-    reward_xp: int = 0,
-    reward_label: str = ""
-):
-    if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
-    if target <= 0:
-        return await i.response.send_message(embed=error_embed("Target must be at least 1."), ephemeral=True)
-    if reward_type in ("xp", "both") and reward_xp <= 0:
-        return await i.response.send_message(embed=error_embed("Set reward_xp > 0 for XP rewards."), ephemeral=True)
-
-    custom = load_custom_quests()
-    gid    = str(i.guild.id)
-    custom.setdefault(gid, [])
-
-    # Generate unique ID
-    import hashlib, time
-    quest_id = "cq_" + hashlib.md5(f"{gid}{name}{time.time()}".encode()).hexdigest()[:8]
-
-    reward_display = reward_label or (f"{reward_xp} XP" if reward_type == "xp" else "Redeem code")
-    if reward_type == "both":
-        reward_display = reward_label or f"{reward_xp} XP + Redeem code"
-
-    new_quest = {
-        "id":          quest_id,
-        "name":        name,
-        "desc":        desc,
-        "type":        quest_type,
-        "target":      target,
-        "reward_xp":   reward_xp,
-        "reward":      reward_display,
-        "reward_type": reward_type,
-        "reset":       reset,
-        "custom":      True,
-    }
-    custom[gid].append(new_quest)
-    save_custom_quests(custom)
-
-    rtype_label = {"xp": "⭐ XP", "code": "🎟️ Code", "both": "⭐🎟️ XP + Code"}[reward_type]
-    embed = success_embed(
-        f"Custom quest **{name}** added!\n\n"
-        f"🆔 ID: `{quest_id}`\n"
-        f"📋 Type: {quest_type} × {target} ({reset})\n"
-        f"🎁 Reward: {rtype_label} — {reward_display}\n\n"
-        f"{'📥 Add redeem codes with `/questadmin addcodes ' + quest_id + '`' if reward_type in ('code','both') else ''}"
-    )
-    await i.response.send_message(embed=embed)
-
-
-@quest_admin.command(name="list", description="List all custom quests in this server.")
-async def slash_quest_admin_list(i: discord.Interaction):
-    if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
-    custom = load_custom_quests()
-    gid    = str(i.guild.id)
-    quests = custom.get(gid, [])
-    if not quests:
-        return await i.response.send_message(embed=info_embed("📋 Custom Quests", "No custom quests yet. Use `/questadmin add` to create one."))
-
-    codes = load_redeem_codes()
-    lines = []
-    for q in quests:
-        pool       = codes.get(gid, {}).get(q["id"], [])
-        available  = sum(1 for c in pool if not c.get("used"))
-        total_pool = len(pool)
-        rtype      = {"xp": "⭐", "code": "🎟️", "both": "⭐🎟️"}.get(q.get("reward_type","xp"), "⭐")
-        lines.append(
-            f"**{q['name']}** — `{q['id']}`\n"
-            f"┗ {q['desc']} | {q['type']} × {q['target']} ({q['reset']})\n"
-            f"┗ {rtype} {q['reward']} | 🎟️ Codes: {available}/{total_pool} available"
-        )
-
-    embed = base_embed("📋 Custom Quests", "\n\n".join(lines))
-    await i.response.send_message(embed=embed)
-
-
-@quest_admin.command(name="remove", description="Remove a custom quest by its ID.")
-@app_commands.describe(quest_id="The quest ID (from /questadmin list)")
-async def slash_quest_remove(i: discord.Interaction, quest_id: str):
-    if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
-    custom = load_custom_quests()
-    gid    = str(i.guild.id)
-    before = len(custom.get(gid, []))
-    custom[gid] = [q for q in custom.get(gid, []) if q["id"] != quest_id]
-    if len(custom[gid]) == before:
-        return await i.response.send_message(embed=error_embed(f"Quest `{quest_id}` not found."), ephemeral=True)
-    save_custom_quests(custom)
-    await i.response.send_message(embed=success_embed(f"Quest `{quest_id}` removed."))
-
-
-@quest_admin.command(name="addcodes", description="Add redeem codes to a quest's code pool.")
-@app_commands.describe(
-    quest_id="Quest ID (from /questadmin list)",
-    codes="Codes separated by commas (e.g. CODE1,CODE2,CODE3) OR leave empty to auto-generate",
-    auto_count="If no codes given, how many to auto-generate (default 10)",
-    prefix="Prefix for auto-generated codes (default: JOY)"
-)
-async def slash_quest_addcodes(
-    i: discord.Interaction,
-    quest_id: str,
-    codes: str = "",
-    auto_count: int = 10,
-    prefix: str = "JOY"
-):
-    if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
-
-    # Verify quest exists
-    all_quests = get_all_quests_for_guild(i.guild.id)
-    quest = next((q for q in all_quests if q["id"] == quest_id), None)
-    if not quest:
-        return await i.response.send_message(embed=error_embed(f"Quest `{quest_id}` not found."), ephemeral=True)
-
-    code_data = load_redeem_codes()
-    gid       = str(i.guild.id)
-    code_data.setdefault(gid, {}).setdefault(quest_id, [])
-    pool = code_data[gid][quest_id]
-
-    added = []
-    if codes.strip():
-        # Manual codes
-        for raw in codes.split(","):
-            c = raw.strip()
-            if c:
-                # Check not duplicate
-                if any(x["code"] == c for x in pool):
-                    continue
-                pool.append({"code": c, "used": False})
-                added.append(c)
-    else:
-        # Auto-generate
-        for _ in range(min(auto_count, 200)):
-            c = generate_auto_code(prefix)
-            pool.append({"code": c, "used": False})
-            added.append(c)
-
-    save_redeem_codes(code_data)
-
-    available = sum(1 for x in pool if not x.get("used"))
-    embed = success_embed(
-        f"Added **{len(added)}** code(s) to **{quest['name']}**\n"
-        f"🎟️ Total available: **{available}**\n\n"
-        + (f"**Codes added:**\n```\n{chr(10).join(added[:20])}{'...' if len(added)>20 else ''}\n```" if added else "")
-    )
-    # Also send codes list as a file if > 20
-    await i.response.send_message(embed=embed)
-
-
-@quest_admin.command(name="viewcodes", description="View all redeem codes for a quest (available & used).")
-@app_commands.describe(quest_id="Quest ID (from /questadmin list)")
-async def slash_quest_viewcodes(i: discord.Interaction, quest_id: str):
-    if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
-    code_data = load_redeem_codes()
-    gid       = str(i.guild.id)
-    pool      = code_data.get(gid, {}).get(quest_id, [])
-    if not pool:
-        return await i.response.send_message(embed=info_embed("🎟️ Code Pool", "No codes in pool. Use `/questadmin addcodes`."))
-
-    available = [c["code"] for c in pool if not c.get("used")]
-    used      = [c["code"] for c in pool if c.get("used")]
-
-    text = f"**Quest:** `{quest_id}`\n\n"
-    text += f"✅ Available ({len(available)}):\n"
-    text += ("```\n" + "\n".join(available[:30]) + ("..." if len(available)>30 else "") + "\n```") if available else "*(none)*\n"
-    text += f"\n❌ Used ({len(used)}):\n"
-    text += ("```\n" + "\n".join(used[:15]) + ("..." if len(used)>15 else "") + "\n```") if used else "*(none)*"
-
-    await i.response.send_message(embed=base_embed("🎟️ Code Pool", text), ephemeral=True)
-
-
-@quest_admin.command(name="clearcodes", description="Clear all UNUSED codes from a quest's pool.")
-@app_commands.describe(quest_id="Quest ID to clear unused codes from")
-async def slash_quest_clearcodes(i: discord.Interaction, quest_id: str):
-    if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
-    code_data = load_redeem_codes()
-    gid       = str(i.guild.id)
-    pool      = code_data.get(gid, {}).get(quest_id, [])
-    before    = sum(1 for c in pool if not c.get("used"))
-    # Keep only used ones
-    code_data.setdefault(gid, {})[quest_id] = [c for c in pool if c.get("used")]
-    save_redeem_codes(code_data)
-    await i.response.send_message(embed=success_embed(f"Cleared **{before}** unused code(s) from `{quest_id}`."))
-
-
-bot.tree.add_command(quest_group)
-bot.tree.add_command(quest_admin)
-
-
-# ── /xp slash command group ────────────────────
-xp_group = app_commands.Group(name="xp", description="Manage XP for server members.")
-
-@xp_group.command(name="add", description="Add xp to the member.")
-@app_commands.describe(member="The member to add XP to", amount="Amount of XP to add")
+@xp_group.command(name="add", description="Add XP to a member. Admin only.")
+@app_commands.describe(member="Target member", amount="Amount of XP to add")
 async def slash_xp_add(i: discord.Interaction, member: discord.Member, amount: int):
     if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
     if amount <= 0:
         return await i.response.send_message(embed=error_embed("Amount must be positive."), ephemeral=True)
-    xp_data  = load_xp_data()
-    user_rec = get_user_xp(xp_data, i.guild.id, member.id)
-    old_lv   = user_rec["level"]
-    user_rec["xp"] += amount
-    new_lv   = level_from_xp(user_rec["xp"])
-    user_rec["level"] = new_lv
-    save_xp_data(xp_data)
-
-    embed = success_embed(f"Added **{amount} XP** to {member.mention}.\nThey now have **{user_rec['xp']} XP** (Level **{new_lv}**).")
+    gc   = guild_cfg(cfg, i.guild.id)
+    data = get_member_xp(gc, str(member.id))
+    old_level = data["level"]
+    data["xp"] += amount
+    data["level"] = level_from_xp(data["xp"])
+    save_config(cfg)
+    embed = success_embed(f"Added **{amount} XP** to {member.mention}.")
+    embed.add_field(name="Total XP", value=str(data["xp"]), inline=True)
+    embed.add_field(name="Level",    value=str(data["level"]), inline=True)
+    if data["level"] > old_level:
+        embed.add_field(name="⬆️", value=f"Leveled up to **{data['level']}**!", inline=True)
     await i.response.send_message(embed=embed)
 
-    if new_lv > old_lv:
-        gc = guild_cfg(cfg, i.guild.id)
-        notif_ch_id = gc.get("levelup_channel") or gc.get("main_channel")
-        notif_ch = i.guild.get_channel(notif_ch_id) if notif_ch_id else i.channel
-        try:
-            await notif_ch.send(f"{member.mention} Mencapai Level **{new_lv}**. KELAZZZ👑!")
-        except Exception:
-            pass
-
-
-@xp_group.command(name="remove", description="Remove xp from the member.")
-@app_commands.describe(member="The member to remove XP from", amount="Amount of XP to remove")
+@xp_group.command(name="remove", description="Remove XP from a member. Admin only.")
+@app_commands.describe(member="Target member", amount="Amount of XP to remove")
 async def slash_xp_remove(i: discord.Interaction, member: discord.Member, amount: int):
     if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
     if amount <= 0:
         return await i.response.send_message(embed=error_embed("Amount must be positive."), ephemeral=True)
-    xp_data  = load_xp_data()
-    user_rec = get_user_xp(xp_data, i.guild.id, member.id)
-    user_rec["xp"] = max(0, user_rec["xp"] - amount)
-    user_rec["level"] = level_from_xp(user_rec["xp"])
-    save_xp_data(xp_data)
-    await i.response.send_message(embed=success_embed(
-        f"Removed **{amount} XP** from {member.mention}.\nThey now have **{user_rec['xp']} XP** (Level **{user_rec['level']}**)."))
+    gc   = guild_cfg(cfg, i.guild.id)
+    data = get_member_xp(gc, str(member.id))
+    data["xp"]    = max(0, data["xp"] - amount)
+    data["level"] = level_from_xp(data["xp"])
+    save_config(cfg)
+    embed = success_embed(f"Removed **{amount} XP** from {member.mention}.")
+    embed.add_field(name="Total XP", value=str(data["xp"]), inline=True)
+    embed.add_field(name="Level",    value=str(data["level"]), inline=True)
+    await i.response.send_message(embed=embed)
 
-
-@xp_group.command(name="set_level", description="Change the member's level.")
-@app_commands.describe(member="The member to set level", level="The level to set")
-async def slash_xp_set_level(i: discord.Interaction, member: discord.Member, level: int):
+@xp_group.command(name="set", description="Set a member's total XP directly. Admin only.")
+@app_commands.describe(member="Target member", amount="New XP total")
+async def slash_xp_set(i: discord.Interaction, member: discord.Member, amount: int):
     if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
-    if level < 0:
-        return await i.response.send_message(embed=error_embed("Level must be 0 or higher."), ephemeral=True)
-    xp_data  = load_xp_data()
-    user_rec = get_user_xp(xp_data, i.guild.id, member.id)
-    # Calculate total XP for the given level
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    if amount < 0:
+        return await i.response.send_message(embed=error_embed("XP cannot be negative."), ephemeral=True)
+    gc   = guild_cfg(cfg, i.guild.id)
+    data = get_member_xp(gc, str(member.id))
+    data["xp"]    = amount
+    data["level"] = level_from_xp(amount)
+    save_config(cfg)
+    await i.response.send_message(embed=success_embed(
+        f"Set {member.mention}'s XP to **{amount}** (Level **{data['level']}**)."))
+
+@xp_group.command(name="setlevel", description="Set a member's level directly. Admin only.")
+@app_commands.describe(member="Target member", level="New level (0–999)")
+async def slash_xp_setlevel(i: discord.Interaction, member: discord.Member, level: int):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    if not (0 <= level <= 999):
+        return await i.response.send_message(embed=error_embed("Level must be between 0 and 999."), ephemeral=True)
+    # Calculate minimum XP to reach this level
     total_xp = sum(xp_for_level(lv) for lv in range(level))
-    user_rec["xp"]    = total_xp
-    user_rec["level"] = level
-    save_xp_data(xp_data)
+    gc   = guild_cfg(cfg, i.guild.id)
+    data = get_member_xp(gc, str(member.id))
+    data["xp"]    = total_xp
+    data["level"] = level
+    save_config(cfg)
     await i.response.send_message(embed=success_embed(
         f"Set {member.mention}'s level to **{level}** ({total_xp} XP)."))
 
-
-@xp_group.command(name="set", description="Set the exact XP amount for a member.")
-@app_commands.describe(member="The member to set XP for", amount="The XP amount to set")
-async def slash_xp_set(i: discord.Interaction, member: discord.Member, amount: int):
+@xp_group.command(name="reset", description="Reset a member's XP and level to zero. Admin only.")
+@app_commands.describe(member="Target member")
+async def slash_xp_reset(i: discord.Interaction, member: discord.Member):
     if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
-    if amount < 0:
-        return await i.response.send_message(embed=error_embed("Amount must be 0 or higher."), ephemeral=True)
-    xp_data  = load_xp_data()
-    user_rec = get_user_xp(xp_data, i.guild.id, member.id)
-    user_rec["xp"]    = amount
-    user_rec["level"] = level_from_xp(amount)
-    save_xp_data(xp_data)
-    await i.response.send_message(embed=success_embed(
-        f"Set {member.mention}'s XP to **{amount}** (Level **{user_rec['level']}**)."))
-
-
-@xp_group.command(name="setchannel", description="Set the channel where level-up notifications are sent.")
-@app_commands.describe(channel="The channel to send level-up notifications to")
-async def slash_xp_setchannel(i: discord.Interaction, channel: discord.TextChannel):
-    if not i.user.guild_permissions.manage_guild:
-        return await i.response.send_message(embed=error_embed("You need Manage Server permission."), ephemeral=True)
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
     gc = guild_cfg(cfg, i.guild.id)
-    gc["levelup_channel"] = channel.id
+    gc["members_xp"][str(member.id)] = {"xp": 0, "level": 0, "last_msg_ts": 0.0, "messages": 0}
     save_config(cfg)
-    await i.response.send_message(embed=success_embed(
-        f"Level-up notifications will now be sent to {channel.mention}!"))
+    await i.response.send_message(embed=success_embed(f"Reset {member.mention}'s XP and level to 0."))
 
 bot.tree.add_command(xp_group)
 
-# ── Prefix bridges for XP commands ────────────
-@bot.command(name="rank")
-async def pfx_rank(ctx, member: discord.Member = None):
-    target = member or ctx.author
-    xp_data  = load_xp_data()
-    user_rec = get_user_xp(xp_data, ctx.guild.id, target.id)
-    total_xp = user_rec["xp"]
-    level    = user_rec["level"]
-    xp_now, xp_need = xp_in_current_level(total_xp)
-    msgs     = user_rec.get("total_messages", 0)
-    gid      = str(ctx.guild.id)
-    guild_data = xp_data.get(gid, {})
-    sorted_users = sorted(guild_data.items(), key=lambda x: x[1].get("xp", 0), reverse=True)
-    rank = next((idx+1 for idx, (uid, _) in enumerate(sorted_users) if uid == str(target.id)), "?")
-    filled = int((xp_now / xp_need) * 20) if xp_need > 0 else 20
-    bar = "█" * filled + "░" * (20 - filled)
-    embed = base_embed(f"⭐ {target.display_name}'s Rank")
+
+# ── Level commands ────────────────────────────
+
+level_group = app_commands.Group(name="level", description="Leveling system configuration and stats.")
+
+@level_group.command(name="rank", description="View your or another member's rank and XP progress.")
+@app_commands.describe(member="Member to check (leave blank = yourself)")
+async def slash_level_rank(i: discord.Interaction, member: Optional[discord.Member] = None):
+    target = member or i.user
+    gc     = guild_cfg(cfg, i.guild.id)
+    data   = get_member_xp(gc, str(target.id))
+    lvl, cx, nx = xp_progress(data["xp"])
+    bar    = make_xp_bar(cx, nx)
+
+    # Leaderboard position
+    all_members = sorted(gc["members_xp"].items(), key=lambda x: x[1].get("xp", 0), reverse=True)
+    rank = next((idx + 1 for idx, (uid, _) in enumerate(all_members) if uid == str(target.id)), "?")
+
+    embed = discord.Embed(
+        title=f"📊 Rank — {target.display_name}",
+        color=EMBED_COLOR,
+        timestamp=discord.utils.utcnow()
+    )
     embed.set_thumbnail(url=target.display_avatar.url)
-    embed.add_field(name="🏆 Rank",     value=f"#{rank}",               inline=True)
-    embed.add_field(name="📊 Level",    value=str(level),                inline=True)
-    embed.add_field(name="✉️ Messages", value=str(msgs),                  inline=True)
-    embed.add_field(name="⭐ Total XP", value=str(total_xp),             inline=True)
-    embed.add_field(name="📈 Progress", value=f"{xp_now}/{xp_need} XP", inline=True)
-    embed.add_field(name="━━━━━━━━━━━━━━━━━━━━━━", value=f"`[{bar}]`",  inline=False)
-    await ctx.send(embed=embed)
+    embed.add_field(name="🏆 Level",      value=f"**{lvl}**",              inline=True)
+    embed.add_field(name="📈 Rank",       value=f"**#{rank}**",            inline=True)
+    embed.add_field(name="⭐ Total XP",   value=f"**{data['xp']:,}**",     inline=True)
+    embed.add_field(name="📊 Progress",
+        value=f"{bar}\n`{cx}/{nx} XP` to Level **{lvl+1}**",              inline=False)
+    embed.add_field(name="✉️ Messages",   value=f"{data.get('messages',0):,}", inline=True)
+    embed.set_footer(text="JoyCannot Leveling System")
+    await i.response.send_message(embed=embed)
 
-@bot.command(name="leaderboard")
-async def pfx_leaderboard(ctx):
-    xp_data    = load_xp_data()
-    gid        = str(ctx.guild.id)
-    guild_data = xp_data.get(gid, {})
-    if not guild_data:
-        return await ctx.send(embed=info_embed("📊 Leaderboard", "No XP data yet!"))
-    sorted_users = sorted(guild_data.items(), key=lambda x: x[1].get("xp", 0), reverse=True)[:10]
+@level_group.command(name="leaderboard", description="Show the top 10 members by XP in this server.")
+async def slash_level_leaderboard(i: discord.Interaction):
+    gc       = guild_cfg(cfg, i.guild.id)
+    all_data = sorted(gc["members_xp"].items(), key=lambda x: x[1].get("xp", 0), reverse=True)[:10]
+
+    if not all_data:
+        return await i.response.send_message(embed=info_embed("📊 Leaderboard", "No XP data yet. Start chatting!"))
+
+    embed = discord.Embed(
+        title="🏆 XP Leaderboard",
+        color=EMBED_COLOR,
+        timestamp=discord.utils.utcnow()
+    )
+    medals = ["🥇", "🥈", "🥉"] + ["🔸"] * 7
     lines  = []
-    medals = ["🥇","🥈","🥉"]
-    for idx, (uid, rec) in enumerate(sorted_users):
-        member = ctx.guild.get_member(int(uid))
-        name   = member.display_name if member else f"User {uid}"
-        medal  = medals[idx] if idx < 3 else f"**#{idx+1}**"
-        lines.append(f"{medal} {name} — Level **{rec.get('level',0)}** · {rec.get('xp',0)} XP")
-    await ctx.send(embed=base_embed("🏆 XP Leaderboard", "\n".join(lines)))
+    for idx, (uid, data) in enumerate(all_data):
+        member = i.guild.get_member(int(uid))
+        name   = member.display_name if member else f"User {uid[:6]}"
+        lvl    = data.get("level", 0)
+        xp     = data.get("xp", 0)
+        lines.append(f"{medals[idx]} **{idx+1}.** {name} — Lv.**{lvl}** · {xp:,} XP")
 
-# ── Hook XP into existing on_message ──────────
+    embed.description = "\n".join(lines)
+    embed.set_footer(text=f"JoyCannot Leveling • {len(gc['members_xp'])} members tracked")
+    await i.response.send_message(embed=embed)
 
-@bot.event
-async def on_message(message: discord.Message):
-    """Main on_message: anti-spam + XP/quests + prefix routing."""
-    if message.author.bot:
-        return
+@level_group.command(name="setchannel", description="Set the channel for level-up notifications. Requires Manage Server.")
+@app_commands.describe(channel="Channel for level-up announcements (leave blank to disable)")
+async def slash_level_setchannel(i: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    gc["level_channel"] = channel.id if channel else None
+    save_config(cfg)
+    if channel:
+        await i.response.send_message(embed=success_embed(f"Level-up notifications will be sent to {channel.mention}."))
+    else:
+        await i.response.send_message(embed=success_embed("Level-up notifications disabled."))
 
-    # ── Anti cross-channel spam ───────────────────────────────────────────
-    if message.guild:
-        uid = message.author.id
-        now = discord.utils.utcnow().timestamp()
+@level_group.command(name="setxp", description="Configure XP gained per message. Requires Manage Server.")
+@app_commands.describe(min_xp="Minimum XP per message (1–100)", max_xp="Maximum XP per message (1–100)",
+                       cooldown="Cooldown in seconds between XP gains (10–300)")
+async def slash_level_setxp(i: discord.Interaction, min_xp: int = 15, max_xp: int = 25, cooldown: int = 60):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    if not (1 <= min_xp <= max_xp <= 100):
+        return await i.response.send_message(embed=error_embed("Invalid range. min must be ≤ max, both between 1–100."), ephemeral=True)
+    if not (10 <= cooldown <= 300):
+        return await i.response.send_message(embed=error_embed("Cooldown must be between 10 and 300 seconds."), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    gc["xp_per_message"] = [min_xp, max_xp]
+    gc["xp_cooldown"]    = cooldown
+    save_config(cfg)
+    await i.response.send_message(embed=success_embed(
+        f"XP per message set to **{min_xp}–{max_xp}**.\nCooldown: **{cooldown}s**."))
 
-        has_content = (
-            message.content.strip()
-            or message.attachments
-            or message.embeds
+@level_group.command(name="setrole", description="Set a role reward for reaching a specific level. Requires Manage Server.")
+@app_commands.describe(level="Level required to earn the role", role="Role to award (leave blank to remove)")
+async def slash_level_setrole(i: discord.Interaction, level: int, role: Optional[discord.Role] = None):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    if role:
+        gc["level_roles"][str(level)] = role.id
+        save_config(cfg)
+        await i.response.send_message(embed=success_embed(f"Members reaching Level **{level}** will receive {role.mention}."))
+    else:
+        gc["level_roles"].pop(str(level), None)
+        save_config(cfg)
+        await i.response.send_message(embed=success_embed(f"Role reward for Level **{level}** removed."))
+
+@level_group.command(name="toggle", description="Enable or disable the leveling system for this server.")
+async def slash_level_toggle(i: discord.Interaction):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    gc["leveling_enabled"] = not gc.get("leveling_enabled", True)
+    save_config(cfg)
+    state = "enabled ✅" if gc["leveling_enabled"] else "disabled ❌"
+    await i.response.send_message(embed=success_embed(f"Leveling system is now **{state}**."))
+
+bot.tree.add_command(level_group)
+
+
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  QUEST SLASH COMMANDS
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
+
+quest_group = app_commands.Group(name="quest", description="View and manage quests in this server.")
+
+@quest_group.command(name="list", description="View all active quests and your progress.")
+async def slash_quest_list(i: discord.Interaction):
+    gc     = guild_cfg(cfg, i.guild.id)
+    quests = [q for q in gc.get("quests", []) if q.get("active", True)]
+    if not quests:
+        return await i.response.send_message(embed=info_embed(
+            "📋 Quests", "No active quests right now.\nAsk an admin to create some with `/quest create`!"))
+
+    uid = str(i.user.id)
+    embed = discord.Embed(title="📋 Active Quests", color=EMBED_COLOR, timestamp=discord.utils.utcnow())
+
+    for quest in quests[:10]:
+        qid      = quest["id"]
+        target   = quest.get("target", 1)
+        progress = get_member_quest_progress(gc, uid, qid)
+        done     = progress >= target
+        bar      = make_xp_bar(min(progress, target), target, length=8)
+        rewards  = []
+        if quest.get("reward_xp"):   rewards.append(f"+{quest['reward_xp']} XP")
+        if quest.get("reward_text"): rewards.append(quest["reward_text"])
+        reward_str = " · ".join(rewards) or "None"
+
+        embed.add_field(
+            name=f"{'✅' if done else '🔶'} {quest['name']}",
+            value=(
+                f"{quest.get('description','')}\n"
+                f"{bar} `{min(progress,target)}/{target}`\n"
+                f"🎁 **Reward:** {reward_str}"
+            ),
+            inline=False
         )
 
-        if has_content:
-            fp = _spam_fingerprint(message)
+    embed.set_footer(text=f"JoyCannot Quest System • {len(quests)} active quest(s)")
+    await i.response.send_message(embed=embed)
 
-            if fp not in spam_tracker[uid]:
-                spam_tracker[uid][fp] = {
-                    "channels":  set(),
-                    "messages":  [],
-                    "first_seen": now,
-                }
+@quest_group.command(name="create", description="Create a new quest for this server. Requires Manage Server.")
+@app_commands.describe(
+    name="Quest name",
+    description="Quest description",
+    quest_type="Type of quest",
+    target="Target count to complete the quest",
+    reward_xp="XP reward on completion (0 = none)",
+    reward_text="Text reward description (optional)"
+)
+@app_commands.choices(quest_type=[
+    app_commands.Choice(name="Send Messages",  value="send_messages"),
+    app_commands.Choice(name="Give Reactions", value="reactions_given"),
+    app_commands.Choice(name="Days Active",    value="days_active"),
+])
+async def slash_quest_create(
+    i: discord.Interaction,
+    name: str,
+    description: str,
+    quest_type: str,
+    target: int,
+    reward_xp: int = 0,
+    reward_text: str = ""
+):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    if target <= 0:
+        return await i.response.send_message(embed=error_embed("Target must be greater than 0."), ephemeral=True)
 
-            entry = spam_tracker[uid][fp]
+    gc = guild_cfg(cfg, i.guild.id)
+    # Generate unique ID
+    quest_id = f"q_{len(gc['quests'])+1}_{int(discord.utils.utcnow().timestamp())}"
+    quest = {
+        "id":          quest_id,
+        "name":        name,
+        "description": description,
+        "type":        quest_type,
+        "target":      target,
+        "reward_xp":   max(0, reward_xp),
+        "reward_text": reward_text,
+        "active":      True,
+        "created_by":  i.user.id,
+    }
+    gc["quests"].append(quest)
+    save_config(cfg)
 
-            if now - entry["first_seen"] <= SPAM_WINDOW:
-                entry["channels"].add(message.channel.id)
-                entry["messages"].append((message.channel.id, message.id))
-                spam_cleanup_times[uid] = now
+    embed = base_embed("✅ Quest Created!", None, color=0x22C55E)
+    embed.add_field(name="📋 Name",        value=name,                                    inline=True)
+    embed.add_field(name="🎯 Type",        value=QUEST_TYPES.get(quest_type,"?").format(target=target), inline=True)
+    embed.add_field(name="🔢 Target",      value=str(target),                             inline=True)
+    if reward_xp:
+        embed.add_field(name="⭐ XP Reward",  value=f"+{reward_xp} XP",                  inline=True)
+    if reward_text:
+        embed.add_field(name="🎁 Reward",     value=reward_text,                          inline=True)
+    await i.response.send_message(embed=embed)
 
-                channel_count = len(entry["channels"])
-                if channel_count >= 2:
-                    await _try_delete(message.channel, message.id)
+@quest_group.command(name="delete", description="Delete a quest by name. Requires Manage Server.")
+@app_commands.describe(name="Exact quest name to delete")
+async def slash_quest_delete(i: discord.Interaction, name: str):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    before = len(gc["quests"])
+    gc["quests"] = [q for q in gc["quests"] if q["name"].lower() != name.lower()]
+    if len(gc["quests"]) == before:
+        return await i.response.send_message(embed=error_embed(f"Quest `{name}` not found."), ephemeral=True)
+    save_config(cfg)
+    await i.response.send_message(embed=success_embed(f"Quest **{name}** deleted."))
 
-                if channel_count >= SPAM_THRESHOLD:
-                    delete_tasks = []
-                    for ch_id, msg_id in entry["messages"]:
-                        ch = message.guild.get_channel(ch_id)
-                        if ch:
-                            delete_tasks.append(_try_delete(ch, msg_id))
-                    await asyncio.gather(*delete_tasks)
+@quest_group.command(name="toggle", description="Enable or disable a specific quest. Requires Manage Server.")
+@app_commands.describe(name="Quest name to toggle")
+async def slash_quest_toggle(i: discord.Interaction, name: str):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    for quest in gc["quests"]:
+        if quest["name"].lower() == name.lower():
+            quest["active"] = not quest.get("active", True)
+            save_config(cfg)
+            state = "enabled ✅" if quest["active"] else "disabled ❌"
+            return await i.response.send_message(embed=success_embed(f"Quest **{name}** is now {state}."))
+    await i.response.send_message(embed=error_embed(f"Quest `{name}` not found."), ephemeral=True)
 
-                    banned = False
-                    try:
-                        await message.guild.ban(
-                            message.author,
-                            reason="[JoyCannot] Cross-channel spam (auto-detected).",
-                            delete_message_days=1
-                        )
-                        banned = True
-                    except discord.Forbidden:
-                        pass
+@quest_group.command(name="resetprogress", description="Reset a member's quest progress. Admin only.")
+@app_commands.describe(member="Member to reset")
+async def slash_quest_reset(i: discord.Interaction, member: discord.Member):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    gc["member_quests"].pop(str(member.id), None)
+    save_config(cfg)
+    await i.response.send_message(embed=success_embed(f"Reset all quest progress for {member.mention}."))
 
-                    gc     = guild_cfg(cfg, message.guild.id)
-                    log_id = gc["ticket"].get("log_channel")
-                    if log_id:
-                        log_ch = message.guild.get_channel(log_id)
-                        if log_ch:
-                            content_type = (
-                                "🖼️ Image/File" if message.attachments
-                                else "🔗 Link/Invite" if any(
-                                    x in (message.content or "") for x in
-                                    ["http", "discord.gg", "discord.com/invite"])
-                                else "💬 Text"
-                            )
-                            log_embed = discord.Embed(
-                                title="🚨 Anti-Spam — User Actioned",
-                                color=0xEF4444,
-                                timestamp=discord.utils.utcnow()
-                            )
-                            log_embed.set_author(
-                                name=str(message.author),
-                                icon_url=message.author.display_avatar.url
-                            )
-                            log_embed.add_field(
-                                name="👤 User",
-                                value=f"{message.author.mention}\n`{message.author.id}`",
-                                inline=True
-                            )
-                            log_embed.add_field(
-                                name="⚡ Action",
-                                value="🔨 **Banned**" if banned else "⚠️ Kicked (no perm)",
-                                inline=True
-                            )
-                            log_embed.add_field(
-                                name="📊 Spam Stats",
-                                value=(
-                                    f"**Channels hit:** {len(entry['channels'])}\n"
-                                    f"**Messages deleted:** {len(entry['messages'])}\n"
-                                    f"**Content:** {content_type}\n"
-                                    f"**Window:** {SPAM_WINDOW}s"
-                                ),
-                                inline=True
-                            )
-                            snippet = (message.content or "")[:100]
-                            if snippet:
-                                log_embed.add_field(
-                                    name="📝 Content Preview",
-                                    value=f"```{snippet}```",
-                                    inline=False
-                                )
-                            elif message.attachments:
-                                log_embed.add_field(
-                                    name="📎 Attachment",
-                                    value=message.attachments[0].filename,
-                                    inline=False
-                                )
-                            log_embed.set_footer(text="JoyCannot Anti-Spam System")
-                            try:
-                                await log_ch.send(embed=log_embed)
-                            except Exception:
-                                pass
+bot.tree.add_command(quest_group)
 
-                    spam_tracker.pop(uid, None)
-                    return
-            else:
-                spam_tracker[uid][fp] = {
-                    "channels":   {message.channel.id},
-                    "messages":   [(message.channel.id, message.id)],
-                    "first_seen": now,
-                }
-                spam_cleanup_times[uid] = now
 
-    # ── XP + Quest processing ─────────────────────────────────────────────
-    await process_xp_and_quests(message)
+# ── /rank shortcut ────────────────────────────
+@bot.tree.command(name="rank", description="View your XP rank and progress in this server.")
+@app_commands.describe(member="Member to check (leave blank = yourself)")
+async def slash_rank(i: discord.Interaction, member: Optional[discord.Member] = None):
+    await slash_level_rank.callback(i, member=member)
 
-    # ── Prefix command routing ────────────────────────────────────────────
-    await bot.process_commands(message)
+# ── /leaderboard shortcut ─────────────────────
+@bot.tree.command(name="leaderboard", description="Show the top 10 members by XP in this server.")
+async def slash_leaderboard(i: discord.Interaction):
+    await slash_level_leaderboard.callback(i)
 
 
 if __name__ == "__main__":
