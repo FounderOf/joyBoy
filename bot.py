@@ -132,6 +132,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
             # ── Leveling & Quest ──────────────────────────────────────────
             "leveling_enabled": True,
             "level_channel":    None,
+            "quest_channel":    None,   # channel for quest list + completion notifs
             "xp_per_message":   [15, 25],
             "xp_cooldown":      60,
             "members_xp":       {},
@@ -149,6 +150,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
     # Ensure leveling keys exist for older guild configs
     gc.setdefault("leveling_enabled", True)
     gc.setdefault("level_channel",    None)
+    gc.setdefault("quest_channel",    None)
     gc.setdefault("xp_per_message",   [15, 25])
     gc.setdefault("xp_cooldown",      60)
     gc.setdefault("members_xp",       {})
@@ -918,8 +920,18 @@ async def on_message(message: discord.Message):
     # ── Prefix command routing ────────────────────────────────────────────
     await bot.process_commands(message)
 
-    # ── XP gain (runs after spam check — if spammer was banned we already returned) ──
+    # ── XP + Quest gain ──────────────────────────────────────────────────
+    # Quest message tracking runs on EVERY message (no cooldown).
+    # XP gain respects cooldown separately.
     if message.guild and not message.author.bot:
+        gc  = guild_cfg(cfg, message.guild.id)
+        uid = str(message.author.id)
+
+        # Quest: track every message regardless of XP cooldown
+        if gc.get("leveling_enabled", True):
+            await update_quest_progress(gc, uid, "send_messages", 1)
+
+        # XP: respects cooldown
         leveled_up, new_level = await process_xp_gain(message)
         if leveled_up:
             await send_levelup_notification(message, new_level)
@@ -1005,9 +1017,6 @@ async def process_xp_gain(message: discord.Message):
     new_level = level_from_xp(data["xp"])
     data["level"] = new_level
     save_config(cfg)
-
-    # Update quest progress for message-based quests
-    await update_quest_progress(gc, uid, "send_messages", 1)
 
     if new_level > old_level:
         return True, new_level
@@ -1104,41 +1113,101 @@ async def update_quest_progress(gc: dict, uid: str, quest_type: str, increment: 
         save_config(cfg)
 
 async def _complete_quest(gc: dict, uid: str, quest: dict):
-    """Handle quest completion: award XP, notify user if possible."""
-    reward_xp = quest.get("reward_xp", 0)
-    if reward_xp > 0:
-        data         = get_member_xp(gc, uid)
-        old_level    = data["level"]
-        data["xp"]  += reward_xp
-        new_level    = level_from_xp(data["xp"])
-        data["level"] = new_level
+    """
+    Handle quest completion:
+    - XP reward  → silently added, no notification
+    - Text reward → "Claim Reward" button in quest_channel → ephemeral embed (only user sees)
+    - Public completion notif → posted in quest_channel (no reward spoiler)
+    """
+    reward_xp   = quest.get("reward_xp", 0)
+    reward_text = quest.get("reward_text", "")
 
-    # Try to find the guild and notify in level channel
+    # ── XP reward: silent add, no notification ───────────────────────────
+    if reward_xp > 0:
+        data          = get_member_xp(gc, uid)
+        data["xp"]   += reward_xp
+        data["level"] = level_from_xp(data["xp"])
+        save_config(cfg)
+
+    # ── Find guild + quest channel ────────────────────────────────────────
+    target_guild = None
+    quest_ch     = None
     for guild in bot.guilds:
-        gc_check = cfg["guilds"].get(str(guild.id))
-        if gc_check is gc or gc_check == gc:
-            member = guild.get_member(int(uid))
-            ch_id  = gc.get("level_channel")
-            ch     = guild.get_channel(ch_id) if ch_id else None
-            if ch and member:
-                embed = discord.Embed(
-                    title="🏆 Quest Completed!",
-                    description=f"{member.mention} completed the quest **{quest['name']}**!",
+        if cfg["guilds"].get(str(guild.id)) is gc:
+            target_guild = guild
+            ch_id = gc.get("quest_channel")
+            if ch_id:
+                quest_ch = guild.get_channel(ch_id)
+            break
+
+    if not target_guild or not quest_ch:
+        return  # No quest channel set — skip all notifications
+
+    member = target_guild.get_member(int(uid))
+    if not member:
+        return
+
+    # ── Public completion embed (reward details hidden) ───────────────────
+    public_embed = discord.Embed(
+        title="🏆 Quest Completed!",
+        description=f"{member.mention} telah menyelesaikan quest **{quest['name']}**! 🎉",
+        color=0x22C55E,
+        timestamp=discord.utils.utcnow()
+    )
+    public_embed.add_field(name="📋 Quest", value=quest.get("description", ""), inline=False)
+    if reward_xp:
+        public_embed.add_field(name="⭐ XP", value=f"+{reward_xp} XP (added)", inline=True)
+    if reward_text:
+        public_embed.add_field(name="🎁 Reward", value="*Klik tombol di bawah untuk klaim*", inline=True)
+    public_embed.set_thumbnail(url=member.display_avatar.url)
+    public_embed.set_footer(text="JoyCannot Quest System")
+
+    if reward_text:
+        # ── Claim button — reward shown ephemerally only to the completer ─
+        class ClaimRewardView(discord.ui.View):
+            def __init__(self, claimer_id: int, reward: str, quest_name: str):
+                super().__init__(timeout=None)
+                self.claimer_id = claimer_id
+                self.reward     = reward
+                self.quest_name = quest_name
+
+            @discord.ui.button(label="🎁 Claim Reward", style=discord.ButtonStyle.success)
+            async def claim(self, interaction: discord.Interaction, btn: discord.ui.Button):
+                if interaction.user.id != self.claimer_id:
+                    return await interaction.response.send_message(
+                        embed=base_embed(
+                            "❌ Bukan hakmu",
+                            "Hadiah ini hanya bisa diklaim oleh yang menyelesaikan quest.",
+                            color=0xEF4444),
+                        ephemeral=True)
+                reward_embed = discord.Embed(
+                    title="🎁 Hadiahmu",
+                    description=(
+                        f"Selamat! Kamu telah menyelesaikan **{self.quest_name}**!\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"```{self.reward}```\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"*Simpan hadiahmu baik-baik!*"
+                    ),
                     color=0x22C55E,
                     timestamp=discord.utils.utcnow()
                 )
-                embed.add_field(name="📋 Quest",      value=quest.get("description", ""),  inline=False)
-                if reward_xp:
-                    embed.add_field(name="⭐ XP Reward", value=f"+{reward_xp} XP",         inline=True)
-                if quest.get("reward_text"):
-                    embed.add_field(name="🎁 Reward",   value=quest["reward_text"],         inline=True)
-                embed.set_thumbnail(url=member.display_avatar.url)
-                embed.set_footer(text="JoyCannot Quest System")
-                try:
-                    await ch.send(embed=embed)
-                except Exception:
-                    pass
-            break
+                reward_embed.set_footer(text="JoyCannot Quest System • Only you can see this")
+                btn.disabled = True
+                btn.label    = "✅ Claimed"
+                await interaction.message.edit(view=self)
+                await interaction.response.send_message(embed=reward_embed, ephemeral=True)
+
+        view = ClaimRewardView(member.id, reward_text, quest["name"])
+        try:
+            await quest_ch.send(embed=public_embed, view=view)
+        except Exception:
+            pass
+    else:
+        try:
+            await quest_ch.send(embed=public_embed)
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────
@@ -3507,10 +3576,15 @@ async def slash_quest_list(i: discord.Interaction):
         progress = get_member_quest_progress(gc, uid, qid)
         done     = progress >= target
         bar      = make_xp_bar(min(progress, target), target, length=8)
-        rewards  = []
-        if quest.get("reward_xp"):   rewards.append(f"+{quest['reward_xp']} XP")
-        if quest.get("reward_text"): rewards.append(quest["reward_text"])
-        reward_str = " · ".join(rewards) or "None"
+
+        # ── Hide reward until quest is completed ──────────────────────────
+        if done:
+            rewards = []
+            if quest.get("reward_xp"):   rewards.append(f"+{quest['reward_xp']} XP")
+            if quest.get("reward_text"): rewards.append(quest["reward_text"])
+            reward_str = " · ".join(rewards) or "None"
+        else:
+            reward_str = "🔒 *Complete quest to reveal*"
 
         embed.add_field(
             name=f"{'✅' if done else '🔶'} {quest['name']}",
@@ -3616,6 +3690,35 @@ async def slash_quest_reset(i: discord.Interaction, member: discord.Member):
     gc["member_quests"].pop(str(member.id), None)
     save_config(cfg)
     await i.response.send_message(embed=success_embed(f"Reset all quest progress for {member.mention}."))
+
+@quest_group.command(name="setchannel", description="Set the quest channel for list and completion notifications. Requires Manage Server.")
+@app_commands.describe(channel="Channel to post quest list and completion notifications (leave blank to disable)")
+async def slash_quest_setchannel(i: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    gc["quest_channel"] = channel.id if channel else None
+    save_config(cfg)
+    if channel:
+        # Post current quest list to the channel as a pinned reference
+        quests = [q for q in gc.get("quests", []) if q.get("active", True)]
+        info_em = discord.Embed(
+            title="📋 Quest Channel",
+            description=(
+                f"Quest channel telah diset ke {channel.mention}!\n"
+                f"Notifikasi penyelesaian quest dan claim reward akan muncul di sini."
+            ),
+            color=0x22C55E
+        )
+        if quests:
+            info_em.add_field(
+                name=f"📌 Active Quests ({len(quests)})",
+                value="\n".join(f"🔶 **{q['name']}** — {q.get('description','')}" for q in quests[:5]),
+                inline=False
+            )
+        await i.response.send_message(embed=info_em)
+    else:
+        await i.response.send_message(embed=success_embed("Quest channel disabled."))
 
 bot.tree.add_command(quest_group)
 
