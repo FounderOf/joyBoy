@@ -115,6 +115,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
                 "category": None,
                 "log_channel": None,
                 "support_role": None,   # role that can see & handle tickets
+                "max_tickets": 1,       # max open tickets per user
                 "panels": []
             },
             "warnings": {},
@@ -126,6 +127,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
     tkt = gc.get("ticket", {})
     if "whitelist_role" in tkt and "support_role" not in tkt:
         tkt["support_role"] = tkt.pop("whitelist_role")
+    tkt.setdefault("max_tickets", 1)
     return gc
 
 # ─────────────────────────────────────────────
@@ -672,6 +674,7 @@ async def on_ready():
         await apply_premium_labels()
 
     cleanup_spam_cache.start()
+    rotate_status.start()
     print(f"[JoyCannot] Ready — {len(bot.guilds)} guild(s).")
 
     # ── Restore premium nicknames for all activated guilds ──
@@ -801,34 +804,74 @@ async def on_message(message: discord.Message):
                     await asyncio.gather(*delete_tasks)
 
                     # ── Ban the spammer ───────────────────────────────────
+                    banned = False
                     try:
                         await message.guild.ban(
                             message.author,
                             reason="[JoyCannot] Cross-channel spam (auto-detected).",
                             delete_message_days=1
                         )
+                        banned = True
                     except discord.Forbidden:
                         pass
 
-                    # ── Log to ticket log channel ─────────────────────────
+                    # ── Professional log embed ────────────────────────────
                     gc     = guild_cfg(cfg, message.guild.id)
                     log_id = gc["ticket"].get("log_channel")
                     if log_id:
                         log_ch = message.guild.get_channel(log_id)
                         if log_ch:
-                            log_embed = error_embed(
-                                t(cfg, message.guild.id, "antispam_ban", user=str(message.author)))
-                            log_embed.add_field(
-                                name="📋 Detail",
-                                value=(
-                                    f"**User:** {message.author.mention} (`{message.author.id}`)\n"
-                                    f"**Channels spammed:** {len(entry['channels'])}\n"
-                                    f"**Messages deleted:** {len(entry['messages'])}\n"
-                                    f"**Content type:** "
-                                    f"{'Image/File' if message.attachments else 'Link/Text'}"
-                                ),
-                                inline=False
+                            content_type = (
+                                "🖼️ Image/File" if message.attachments
+                                else "🔗 Link/Invite" if any(
+                                    x in (message.content or "") for x in
+                                    ["http", "discord.gg", "discord.com/invite"])
+                                else "💬 Text"
                             )
+                            log_embed = discord.Embed(
+                                title="🚨 Anti-Spam — User Actioned",
+                                color=0xEF4444,
+                                timestamp=discord.utils.utcnow()
+                            )
+                            log_embed.set_author(
+                                name=str(message.author),
+                                icon_url=message.author.display_avatar.url
+                            )
+                            log_embed.add_field(
+                                name="👤 User",
+                                value=f"{message.author.mention}\n`{message.author.id}`",
+                                inline=True
+                            )
+                            log_embed.add_field(
+                                name="⚡ Action",
+                                value="🔨 **Banned**" if banned else "⚠️ Kicked (no perm)",
+                                inline=True
+                            )
+                            log_embed.add_field(
+                                name="📊 Spam Stats",
+                                value=(
+                                    f"**Channels hit:** {len(entry['channels'])}\n"
+                                    f"**Messages deleted:** {len(entry['messages'])}\n"
+                                    f"**Content:** {content_type}\n"
+                                    f"**Window:** {SPAM_WINDOW}s"
+                                ),
+                                inline=True
+                            )
+                            # Show a snippet of the spam content
+                            snippet = (message.content or "")[:100]
+                            if snippet:
+                                log_embed.add_field(
+                                    name="📝 Content Preview",
+                                    value=f"```{snippet}```",
+                                    inline=False
+                                )
+                            elif message.attachments:
+                                log_embed.add_field(
+                                    name="📎 Attachment",
+                                    value=message.attachments[0].filename,
+                                    inline=False
+                                )
+                            log_embed.set_footer(text="JoyCannot Anti-Spam System")
                             try:
                                 await log_ch.send(embed=log_embed)
                             except Exception:
@@ -870,6 +913,36 @@ async def cleanup_spam_cache():
     for uid in stale_users:
         spam_tracker.pop(uid, None)
         spam_cleanup_times.pop(uid, None)
+
+
+_status_index = 0
+
+@tasks.loop(seconds=20)
+async def rotate_status():
+    """Rotate bot status every 20 seconds for a professional presence."""
+    global _status_index
+    guild_count   = len(bot.guilds)
+    premium_count = len(cfg.get("premium_guilds", []))
+    statuses = [
+        discord.Activity(type=discord.ActivityType.watching,
+                         name=f"{guild_count} servers"),
+        discord.Activity(type=discord.ActivityType.listening,
+                         name="/help • !Joy help"),
+        discord.Activity(type=discord.ActivityType.playing,
+                         name="JoyCannot v1.3 🚀"),
+        discord.Activity(type=discord.ActivityType.watching,
+                         name=f"{premium_count} premium server{'s' if premium_count != 1 else ''}"),
+        discord.Activity(type=discord.ActivityType.listening,
+                         name="/vote → get discount 🗳️"),
+        discord.Activity(type=discord.ActivityType.watching,
+                         name="for cross-channel spam 🛡️"),
+    ]
+    activity = statuses[_status_index % len(statuses)]
+    _status_index += 1
+    try:
+        await bot.change_presence(status=discord.Status.online, activity=activity)
+    except Exception:
+        pass
 
 # ─────────────────────────────────────────────
 # ══════════════════════════════════════════
@@ -1334,31 +1407,38 @@ bot.tree.add_command(lang_group)
 
 ticket_group = app_commands.Group(name="ticket", description="Manage the server's ticket support system.")
 
-@ticket_group.command(name="setup", description="Configure the ticket system: category, log channel, and support staff role.")
+@ticket_group.command(name="setup", description="Configure the ticket system: category, log channel, support staff role, and ticket limits.")
 @app_commands.describe(
     category="The category where new ticket channels will be created",
     log_channel="Channel where ticket open/close events are logged",
-    support_role="Role for admins/ticket support staff — they get auto-access to every ticket (leave blank = only Manage Channels perm)"
+    support_role="Role for admins/ticket support staff — they get auto-access to every ticket",
+    max_tickets="Max open tickets per user at a time (default: 1, max: 5)"
 )
 async def slash_ticket_setup(
     i: discord.Interaction,
     category: discord.CategoryChannel,
     log_channel: discord.TextChannel,
-    support_role: Optional[discord.Role] = None
+    support_role: Optional[discord.Role] = None,
+    max_tickets: int = 1
 ):
     if not i.user.guild_permissions.manage_guild:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    if not (1 <= max_tickets <= 5):
+        return await i.response.send_message(embed=error_embed("Max tickets must be between 1 and 5."), ephemeral=True)
     gc = guild_cfg(cfg, i.guild.id)
     gc["ticket"]["category"]     = category.id
     gc["ticket"]["log_channel"]  = log_channel.id
     gc["ticket"]["support_role"] = support_role.id if support_role else None
+    gc["ticket"]["max_tickets"]  = max_tickets
     save_config(cfg)
-    await i.response.send_message(embed=success_embed(
-        f"Ticket system configured!\n"
-        f"**Category:** {category.name}\n"
-        f"**Log:** {log_channel.mention}\n"
-        f"**Support Role:** {support_role.mention if support_role else 'Anyone with Manage Channels'}"
-    ))
+
+    embed = base_embed("✅ Ticket System Configured",
+        "Ticket system has been set up successfully!")
+    embed.add_field(name="📁 Category",     value=category.name,                                            inline=True)
+    embed.add_field(name="📋 Log Channel",  value=log_channel.mention,                                      inline=True)
+    embed.add_field(name="🎭 Support Role", value=support_role.mention if support_role else "Anyone with Manage Channels", inline=True)
+    embed.add_field(name="🎫 Max Tickets",  value=f"{max_tickets} per user",                                inline=True)
+    await i.response.send_message(embed=embed)
 
 @ticket_group.command(name="panel", description="Send a ticket panel embed with an 'Open Ticket' button to this channel.")
 @app_commands.describe(
@@ -1391,95 +1471,205 @@ async def slash_ticket_panel(
     gc["ticket"]["panels"].append({"channel_id": i.channel.id, "title": title})
     save_config(cfg)
 
-@ticket_group.command(name="close", description="Close and delete this ticket channel. Only usable inside a ticket.")
+@ticket_group.command(name="close", description="Close this ticket. You'll be asked for a reason (required).")
 async def slash_ticket_close(i: discord.Interaction):
     gc = guild_cfg(cfg, i.guild.id)
     for uid, ch_id in list(gc["active_tickets"].items()):
         if ch_id == i.channel.id:
             if not (i.user.guild_permissions.manage_channels or str(i.user.id) == uid):
                 return await i.response.send_message(embed=error_embed("You cannot close this ticket."), ephemeral=True)
-            await i.response.send_message(embed=info_embed("🔒 Closing...", "Deleting in 5 seconds."))
-            await asyncio.sleep(5)
-            del gc["active_tickets"][uid]
-            save_config(cfg)
-            await i.channel.delete(reason="Ticket closed.")
-            return
+            return await i.response.send_modal(TicketCloseModal(uid))
     await i.response.send_message(embed=error_embed("This channel is not a ticket."), ephemeral=True)
 
 bot.tree.add_command(ticket_group)
+
+
+class TicketCloseModal(discord.ui.Modal, title="🔒 Close Ticket"):
+    """Shown when closing a ticket — requires a reason."""
+    reason = discord.ui.TextInput(
+        label="Reason for closing",
+        placeholder="e.g. Issue resolved, No response from user, Duplicate ticket...",
+        style=discord.TextStyle.paragraph,
+        min_length=5,
+        max_length=300
+    )
+
+    def __init__(self, opener_uid: str):
+        super().__init__()
+        self.opener_uid = opener_uid
+
+    async def on_submit(self, i: discord.Interaction):
+        reason_text = self.reason.value.strip()
+        gc = guild_cfg(cfg, i.guild.id)
+
+        close_embed = base_embed(
+            "🔒 Ticket Closing",
+            f"This ticket is being closed by {i.user.mention}.\n"
+            f"**Reason:** {reason_text}\n\n"
+            "Channel will be deleted in **5 seconds**.",
+            color=0xEF4444
+        )
+        await i.response.send_message(embed=close_embed)
+
+        # ── Log to log channel ────────────────────────────────────────────
+        log_id = gc["ticket"].get("log_channel")
+        if log_id:
+            log_ch = i.guild.get_channel(log_id)
+            if log_ch:
+                log_embed = base_embed(
+                    "📋 Ticket Closed",
+                    None,
+                    color=0xEF4444
+                )
+                log_embed.add_field(name="🎫 Channel",   value=i.channel.name,           inline=True)
+                log_embed.add_field(name="🔒 Closed by", value=i.user.mention,            inline=True)
+                log_embed.add_field(name="📝 Reason",    value=reason_text,               inline=False)
+                log_embed.add_field(name="🕐 Time",
+                    value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=False)
+                # Find opener
+                opener = i.guild.get_member(int(self.opener_uid)) if self.opener_uid.isdigit() else None
+                if opener:
+                    log_embed.add_field(name="👤 Opened by", value=opener.mention, inline=True)
+                try:
+                    await log_ch.send(embed=log_embed)
+                except Exception:
+                    pass
+
+        await asyncio.sleep(5)
+        if self.opener_uid in gc["active_tickets"]:
+            del gc["active_tickets"][self.opener_uid]
+            save_config(cfg)
+        try:
+            await i.channel.delete(reason=f"Ticket closed by {i.user} — {reason_text}")
+        except Exception:
+            pass
+
 
 async def handle_open_ticket(i: discord.Interaction):
     gc  = guild_cfg(cfg, i.guild.id)
     uid = str(i.user.id)
 
-    if uid in gc["active_tickets"]:
-        existing = i.guild.get_channel(gc["active_tickets"][uid])
-        if existing:
-            return await i.response.send_message(
-                embed=error_embed(t(cfg, i.guild.id, "ticket_exists")), ephemeral=True)
-        del gc["active_tickets"][uid]
+    # ── Max tickets check ─────────────────────────────────────────────────
+    max_tickets = gc["ticket"].get("max_tickets", 1)
+    user_tickets = [ch_id for u, ch_id in gc["active_tickets"].items()
+                    if u == uid and i.guild.get_channel(ch_id)]
+    if len(user_tickets) >= max_tickets:
+        if max_tickets == 1:
+            existing_ch = i.guild.get_channel(user_tickets[0])
+            msg = (f"You already have an open ticket: {existing_ch.mention if existing_ch else 'unknown channel'}.\n"
+                   f"Please close it before opening a new one.")
+        else:
+            msg = (f"You have reached the maximum of **{max_tickets}** open tickets.\n"
+                   f"Please close one before opening a new one.")
+        return await i.response.send_message(embed=base_embed(
+            "🎫 Ticket Limit Reached", msg, color=0xF59E0B), ephemeral=True)
+
+    # Clean up stale ticket records where channel no longer exists
+    stale = [u for u, ch_id in gc["active_tickets"].items()
+             if u == uid and not i.guild.get_channel(ch_id)]
+    for u in stale:
+        del gc["active_tickets"][u]
+    if stale:
         save_config(cfg)
 
     category = i.guild.get_channel(gc["ticket"].get("category"))
     if not category:
-        return await i.response.send_message(embed=error_embed("Ticket category not found."), ephemeral=True)
+        return await i.response.send_message(embed=error_embed(
+            "❌ Ticket category not configured.\nAsk an admin to run `/ticket setup` first."), ephemeral=True)
 
     safe = re.sub(r"[^a-z0-9]", "", i.user.name.lower()) or "user"
+    ticket_num = len(gc["active_tickets"]) + 1
 
     # ── Build permission overwrites ───────────────────────────────────────
     ovw = {
         i.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-        i.user:               discord.PermissionOverwrite(read_messages=True, send_messages=True),
+        i.user:               discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
         i.guild.me:           discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
     }
-    # Give support role full access to ticket channel
     sr_id = gc["ticket"].get("support_role")
     support_role = i.guild.get_role(sr_id) if sr_id else None
     if support_role:
         ovw[support_role] = discord.PermissionOverwrite(
-            read_messages=True, send_messages=True, manage_messages=True)
+            read_messages=True, send_messages=True, manage_messages=True, attach_files=True)
 
-    ch = await i.guild.create_text_channel(f"ticket-{safe}", category=category, overwrites=ovw)
+    ch = await i.guild.create_text_channel(
+        f"ticket-{ticket_num:04d}-{safe}",
+        category=category,
+        overwrites=ovw,
+        topic=f"Ticket opened by {i.user} ({i.user.id})"
+    )
     gc["active_tickets"][uid] = ch.id
     save_config(cfg)
 
     await i.response.send_message(
-        embed=success_embed(t(cfg, i.guild.id, "ticket_open", channel=ch.mention)), ephemeral=True)
+        embed=base_embed(
+            "🎫 Ticket Created",
+            f"Your ticket has been created: {ch.mention}\nOur support team will assist you shortly.",
+            color=0x22C55E
+        ), ephemeral=True)
+
+    # ── Professional welcome embed ────────────────────────────────────────
+    sr_mention = support_role.mention if support_role else ""
 
     class CloseView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=None)
-        @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger,
-                           emoji="🔒", custom_id="joy_ticket_close")
-        async def close(self, interaction: discord.Interaction, _btn):
-            if not (interaction.user.guild_permissions.manage_channels or interaction.user.id == i.user.id):
-                return await interaction.response.send_message(
-                    embed=error_embed("You cannot close this ticket."), ephemeral=True)
-            await interaction.response.send_message(embed=info_embed("🔒 Closing...", "Deleting in 5 seconds."))
-            await asyncio.sleep(5)
-            inner = guild_cfg(cfg, interaction.guild.id)
-            for k, v in list(inner["active_tickets"].items()):
-                if v == interaction.channel.id:
-                    del inner["active_tickets"][k]
-                    save_config(cfg)
-                    break
-            await interaction.channel.delete(reason="Ticket closed.")
 
-    sr_mention = support_role.mention if support_role else ""
-    welcome = base_embed(f"🎫 Ticket — {i.user.display_name}",
-        f"Hello {i.user.mention}! "
-        f"{'Our ' + sr_mention + ' staff' if sr_mention else 'Staff'} will assist you shortly.\n"
-        f"Click **Close Ticket** when resolved.")
+        @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger,
+                           emoji="🔒", custom_id=f"joy_ticket_close_{ch.id}")
+        async def close_btn(self, interaction: discord.Interaction, _btn):
+            # Check permission
+            can_close = (
+                interaction.user.guild_permissions.manage_channels
+                or interaction.user.id == i.user.id
+                or (support_role and support_role in interaction.user.roles)
+            )
+            if not can_close:
+                return await interaction.response.send_message(
+                    embed=error_embed("❌ You don't have permission to close this ticket."),
+                    ephemeral=True)
+            # Find opener uid
+            inner = guild_cfg(cfg, interaction.guild.id)
+            opener_uid = next(
+                (k for k, v in inner["active_tickets"].items() if v == interaction.channel.id), uid)
+            await interaction.response.send_modal(TicketCloseModal(opener_uid))
+
+    welcome = discord.Embed(
+        title=f"🎫 Ticket #{ticket_num:04d}",
+        description=(
+            f"Hello {i.user.mention}, welcome to your support ticket!\n\n"
+            f"{'📣 ' + sr_mention + ' has been notified.' if sr_mention else '📣 Support staff has been notified.'}\n\n"
+            f"**Please describe your issue in detail** and our team will assist you as soon as possible.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔒 Click **Close Ticket** when your issue is resolved."
+        ),
+        color=EMBED_COLOR
+    )
+    welcome.add_field(name="👤 Opened by",  value=f"{i.user.mention} (`{i.user.id}`)", inline=True)
+    welcome.add_field(name="🕐 Opened at",  value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=True)
+    welcome.set_thumbnail(url=i.user.display_avatar.url)
+    welcome.set_footer(text="JoyCannot Ticket System • Close with reason when resolved")
+
     await ch.send(
         content=sr_mention if sr_mention else None,
-        embed=welcome, view=CloseView())
+        embed=welcome,
+        view=CloseView()
+    )
 
+    # ── Log ───────────────────────────────────────────────────────────────
     log_id = gc["ticket"].get("log_channel")
     if log_id:
         log_ch = i.guild.get_channel(log_id)
         if log_ch:
-            await log_ch.send(embed=info_embed("📋 Ticket Opened",
-                f"**User:** {i.user.mention}\n**Channel:** {ch.mention}"))
+            log_embed = base_embed("📋 Ticket Opened", None, color=0x22C55E)
+            log_embed.add_field(name="🎫 Ticket",    value=f"{ch.mention} (#{ticket_num:04d})", inline=True)
+            log_embed.add_field(name="👤 Opened by", value=f"{i.user.mention} (`{i.user.id}`)", inline=True)
+            log_embed.add_field(name="🕐 Time",
+                value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=False)
+            try:
+                await log_ch.send(embed=log_embed)
+            except Exception:
+                pass
 
 # ── PREMIUM (slash) ───────────────────────────
 
