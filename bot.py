@@ -1195,8 +1195,12 @@ async def _complete_quest(gc: dict, uid: str, quest: dict):
                 reward_embed.set_footer(text="JoyCannot Quest System • Only you can see this")
                 btn.disabled = True
                 btn.label    = "✅ Claimed"
-                await interaction.message.edit(view=self)
+                # Send ephemeral reward first, then delete the public message
                 await interaction.response.send_message(embed=reward_embed, ephemeral=True)
+                try:
+                    await interaction.message.delete()
+                except Exception:
+                    pass
 
         view = ClaimRewardView(member.id, reward_text, quest["name"])
         try:
