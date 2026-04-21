@@ -976,11 +976,12 @@ def xp_progress(total_xp: int) -> tuple[int, int, int]:
         level += 1
     return level, remaining, xp_for_level(level)
 
-def make_xp_bar(current: int, needed: int, length: int = 12) -> str:
-    """Generate a visual XP progress bar."""
-    filled = int((current / max(needed, 1)) * length)
-    bar    = "█" * filled + "░" * (length - filled)
-    return f"`[{bar}]`"
+def make_xp_bar(current: int, needed: int, length: int = 16) -> str:
+    """Generate a rich visual XP progress bar with percentage."""
+    pct    = current / max(needed, 1)
+    filled = int(pct * length)
+    bar    = "▰" * filled + "▱" * (length - filled)
+    return f"`{bar}` **{int(pct*100)}%**"
 
 def get_member_xp(gc: dict, uid: str) -> dict:
     """Get or create member XP data."""
@@ -1023,33 +1024,66 @@ async def process_xp_gain(message: discord.Message):
     return False, 0
 
 async def send_levelup_notification(message: discord.Message, new_level: int):
-    """Send a level-up embed to the configured level channel (or current channel)."""
-    gc         = guild_cfg(cfg, message.guild.id)
-    ch_id      = gc.get("level_channel")
-    target     = message.guild.get_channel(ch_id) if ch_id else message.channel
-
+    """Send a professional level-up card embed to the configured level channel."""
+    gc     = guild_cfg(cfg, message.guild.id)
+    ch_id  = gc.get("level_channel")
+    target = message.guild.get_channel(ch_id) if ch_id else message.channel
     if not target:
         return
 
-    uid   = str(message.author.id)
-    data  = get_member_xp(gc, uid)
-    _, cx, nx = xp_progress(data["xp"])
-    bar   = make_xp_bar(cx, nx)
+    uid  = str(message.author.id)
+    data = get_member_xp(gc, uid)
 
+    # Leaderboard rank
+    all_members = sorted(gc["members_xp"].items(), key=lambda x: x[1].get("xp", 0), reverse=True)
+    rank = next((idx + 1 for idx, (u, _) in enumerate(all_members) if u == uid), "?")
+
+    lvl, cx, nx = xp_progress(data["xp"])
+    pct  = int((cx / max(nx, 1)) * 100)
+    bar  = "▰" * int(pct / 100 * 16) + "▱" * (16 - int(pct / 100 * 16))
+
+    # ── Level-up card embed ────────────────────────────────────────────────
     embed = discord.Embed(
-        title="⬆️ Level Up!",
-        description=f"Selamat {message.author.mention}! Kamu naik ke **Level {new_level}**! 🎉",
-        color=0xF59E0B,
+        description=(
+            f"**@{message.author.display_name}**\n"
+            f"⠀\n"
+            f"**Level: {new_level}** ⠀·⠀ "
+            f"**XP: {cx:,} / {nx:,}** ⠀·⠀ "
+            f"**Rank: #{rank}**\n"
+            f"⠀\n"
+            f"`{bar}` {pct}%"
+        ),
+        color=0x1DB954,
         timestamp=discord.utils.utcnow()
     )
-    embed.add_field(name="📊 Progress", value=f"{bar} {cx}/{nx} XP", inline=False)
-    embed.add_field(name="🏆 Level",    value=str(new_level),         inline=True)
-    embed.add_field(name="✉️ Messages", value=str(data["messages"]),  inline=True)
+    embed.set_author(
+        name=f"⬆️ Level Up!",
+        icon_url=message.author.display_avatar.url
+    )
     embed.set_thumbnail(url=message.author.display_avatar.url)
-    embed.set_footer(text="JoyCannot Leveling System")
+
+    # ── Vote boost hint ────────────────────────────────────────────────────
+    bot_id   = bot.user.id if bot.user else ""
+    vote_url = f"https://top.gg/bot/{bot_id}/vote"
+    embed.set_footer(
+        text=f"Vote Booster: Vote now for a 10% XP boost.  {vote_url}",
+        icon_url="https://top.gg/favicon.ico"
+    )
+
+    # ── Buttons (vote link) ───────────────────────────────────────────────
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(
+        label="🗳️ Vote for XP boost",
+        url=vote_url,
+        style=discord.ButtonStyle.link
+    ))
 
     try:
-        await target.send(embed=embed)
+        await target.send(
+            content=message.author.mention,
+            embed=embed,
+            view=view
+        )
     except discord.Forbidden:
         pass
 
@@ -1401,6 +1435,9 @@ async def do_help(reply_fn):
     ), inline=False)
     embed.add_field(name="📋 Quests", value=(
         f"{lbl('quest list')} · {lbl('quest create')} · {lbl('quest delete')} · {lbl('quest toggle')}"
+    ), inline=False)
+    embed.add_field(name="🎊 Giveaway", value=(
+        f"{lbl('giveaway start')} · {lbl('giveaway end')} · {lbl('giveaway reroll')} · {lbl('giveaway list')}"
     ), inline=False)
     embed.add_field(name="👑 Owner Only (prefix)", value=(
         "`!Joy maintenance` · `!Joy premium` · `!Joy setchannel`"
@@ -3450,26 +3487,40 @@ async def slash_level_rank(i: discord.Interaction, member: Optional[discord.Memb
     gc     = guild_cfg(cfg, i.guild.id)
     data   = get_member_xp(gc, str(target.id))
     lvl, cx, nx = xp_progress(data["xp"])
-    bar    = make_xp_bar(cx, nx)
 
-    # Leaderboard position
     all_members = sorted(gc["members_xp"].items(), key=lambda x: x[1].get("xp", 0), reverse=True)
     rank = next((idx + 1 for idx, (uid, _) in enumerate(all_members) if uid == str(target.id)), "?")
 
+    pct = int((cx / max(nx, 1)) * 100)
+    bar = "▰" * int(pct / 100 * 16) + "▱" * (16 - int(pct / 100 * 16))
+
+    bot_id   = bot.user.id if bot.user else ""
+    vote_url = f"https://top.gg/bot/{bot_id}/vote"
+
     embed = discord.Embed(
-        title=f"📊 Rank — {target.display_name}",
-        color=EMBED_COLOR,
+        description=(
+            f"**@{target.display_name}**\n"
+            f"⠀\n"
+            f"**Level: {lvl}** ⠀·⠀ "
+            f"**XP: {cx:,} / {nx:,}** ⠀·⠀ "
+            f"**Rank: #{rank}**\n"
+            f"⠀\n"
+            f"`{bar}` {pct}%\n"
+            f"⠀\n"
+            f"*Total XP: {data['xp']:,} ⠀·⠀ Messages: {data.get('messages',0):,}*"
+        ),
+        color=0x1DB954,
         timestamp=discord.utils.utcnow()
     )
+    embed.set_author(name=f"📊 Rank Card", icon_url=target.display_avatar.url)
     embed.set_thumbnail(url=target.display_avatar.url)
-    embed.add_field(name="🏆 Level",      value=f"**{lvl}**",              inline=True)
-    embed.add_field(name="📈 Rank",       value=f"**#{rank}**",            inline=True)
-    embed.add_field(name="⭐ Total XP",   value=f"**{data['xp']:,}**",     inline=True)
-    embed.add_field(name="📊 Progress",
-        value=f"{bar}\n`{cx}/{nx} XP` to Level **{lvl+1}**",              inline=False)
-    embed.add_field(name="✉️ Messages",   value=f"{data.get('messages',0):,}", inline=True)
-    embed.set_footer(text="JoyCannot Leveling System")
-    await i.response.send_message(embed=embed)
+    embed.set_footer(
+        text=f"Vote Booster: Vote now for a 10% XP boost.  top.gg/bot/{bot_id}/vote",
+    )
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="🗳️ Vote for XP boost", url=vote_url, style=discord.ButtonStyle.link))
+    await i.response.send_message(embed=embed, view=view)
 
 @level_group.command(name="leaderboard", description="Show the top 10 members by XP in this server.")
 async def slash_level_leaderboard(i: discord.Interaction):
@@ -3737,6 +3788,358 @@ async def slash_rank(i: discord.Interaction, member: Optional[discord.Member] = 
 @bot.tree.command(name="leaderboard", description="Show the top 10 members by XP in this server.")
 async def slash_leaderboard(i: discord.Interaction):
     await slash_level_leaderboard.callback(i)
+
+
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  GIVEAWAY SYSTEM
+#  /giveaway start  → create & schedule giveaway
+#  /giveaway end    → force end early
+#  /giveaway reroll → reroll winner(s)
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
+
+# active_giveaways: message_id → giveaway data dict
+active_giveaways: dict[int, dict] = {}
+
+
+def build_giveaway_embed(gw: dict, ended: bool = False) -> discord.Embed:
+    """Build a professional giveaway embed."""
+    color = 0xEF4444 if ended else 0xF59E0B
+    ends_dt = datetime.datetime.utcfromtimestamp(gw["ends_ts"]).replace(tzinfo=datetime.timezone.utc)
+
+    if ended:
+        winners = gw.get("winners", [])
+        if winners:
+            winner_str  = " ".join(f"<@{w}>" for w in winners)
+            result_line = f"🏆 **Winner{'s' if len(winners) > 1 else ''}:** {winner_str}"
+        else:
+            result_line = "😔 **No valid entries — no winner.**"
+        desc = (
+            f"**{gw['prize']}**\n"
+            + (f"\n{gw['description']}\n" if gw.get("description") else "")
+            + f"\n{result_line}\n\n"
+            f"🏁 Giveaway has ended."
+        )
+    else:
+        desc = (
+            f"**{gw['prize']}**\n"
+            + (f"\n{gw['description']}\n" if gw.get("description") else "")
+            + f"\nReact with 🎉 to enter!\n\n"
+            f"⏰ **Ends:** {discord.utils.format_dt(ends_dt, 'R')}\n"
+            f"👥 **Winners:** {gw['winner_count']}"
+        )
+
+    embed = discord.Embed(
+        title="🎊 GIVEAWAY 🎊" if not ended else "🎊 GIVEAWAY ENDED",
+        description=desc,
+        color=color,
+        timestamp=discord.utils.utcnow()
+    )
+
+    # Host
+    if gw.get("host_id"):
+        embed.add_field(name="🎗️ Hosted by", value=f"<@{gw['host_id']}>",  inline=True)
+
+    embed.add_field(name="🏅 Winners",      value=str(gw["winner_count"]),   inline=True)
+
+    if not ended:
+        embed.add_field(name="🎟️ Entries",  value=str(len(gw.get("entries", []))), inline=True)
+
+    # Requirements
+    reqs = []
+    if gw.get("required_role"):
+        reqs.append(f"🎭 Role: <@&{gw['required_role']}>")
+    if gw.get("min_level", 0) > 0:
+        reqs.append(f"⭐ Min Level: **{gw['min_level']}**")
+    if reqs:
+        embed.add_field(name="📋 Requirements", value="\n".join(reqs), inline=False)
+
+    embed.set_footer(text="JoyCannot Giveaway System • React 🎉 to enter!")
+    return embed
+
+
+async def pick_winners(gw: dict) -> list[int]:
+    """Pick random winners from entries list."""
+    entries = list(set(gw.get("entries", [])))
+    count   = min(gw.get("winner_count", 1), len(entries))
+    if count <= 0:
+        return []
+    return random.sample(entries, count)
+
+
+async def end_giveaway(gw: dict):
+    """End a giveaway: pick winner, edit embed, announce."""
+    channel = bot.get_channel(gw["channel_id"])
+    if not channel:
+        active_giveaways.pop(gw["message_id"], None)
+        return
+
+    try:
+        msg = await channel.fetch_message(gw["message_id"])
+        # Collect entries from 🎉 reactions, validate requirements
+        req_role_id = gw.get("required_role")
+        min_level   = gw.get("min_level", 0)
+        gc          = guild_cfg(cfg, gw["guild_id"]) if gw.get("guild_id") else {}
+
+        for reaction in msg.reactions:
+            if str(reaction.emoji) == "🎉":
+                async for user in reaction.users():
+                    if user.bot or user.id in gw["entries"]:
+                        continue
+                    member = channel.guild.get_member(user.id)
+                    if not member:
+                        continue
+                    # Check required role
+                    if req_role_id:
+                        role = channel.guild.get_role(req_role_id)
+                        if role and role not in member.roles:
+                            continue  # Doesn't have required role — skip
+                    # Check min level
+                    if min_level > 0:
+                        xp_data = gc.get("members_xp", {}).get(str(user.id), {})
+                        if xp_data.get("level", 0) < min_level:
+                            continue  # Level too low — skip
+                    gw["entries"].append(user.id)
+                break
+    except (discord.NotFound, discord.Forbidden):
+        active_giveaways.pop(gw["message_id"], None)
+        return
+
+    winners = await pick_winners(gw)
+    gw["winners"] = winners
+    gw["ended"]   = True
+
+    # Edit original embed to ended state
+    try:
+        await msg.edit(embed=build_giveaway_embed(gw, ended=True), view=None)
+    except Exception:
+        pass
+
+    # Announce winners — tag them in content for notification
+    if winners:
+        winner_str = " ".join(f"<@{w}>" for w in winners)
+        win_embed  = discord.Embed(
+            title="🏆 Giveaway Winners!",
+            description=(
+                f"Selamat kepada {winner_str}!\n\n"
+                f"🎁 **Prize:** {gw['prize']}\n"
+                f"🔗 [Jump to Giveaway](https://discord.com/channels/{channel.guild.id}/{channel.id}/{msg.id})"
+            ),
+            color=0x22C55E,
+            timestamp=discord.utils.utcnow()
+        )
+        win_embed.set_footer(text="JoyCannot Giveaway System")
+        try:
+            await channel.send(content=winner_str, embed=win_embed)
+        except Exception:
+            pass
+    else:
+        try:
+            await channel.send(embed=info_embed("🎊 Giveaway Ended", f"No valid entries for **{gw['prize']}**."))
+        except Exception:
+            pass
+
+    active_giveaways.pop(gw["message_id"], None)
+
+
+giveaway_group = app_commands.Group(name="giveaway", description="Create and manage giveaways.")
+
+
+@giveaway_group.command(name="start", description="Start a giveaway. Requires Manage Server.")
+@app_commands.describe(
+    prize="What you're giving away (e.g. 'Steam Gift Card $10', 'Premium 1 month')",
+    duration="Duration: e.g. 1h, 30m, 2h30m, 1d",
+    winners="Number of winners (1–20, default: 1)",
+    description="Optional description or extra info about the prize",
+    required_role="Only members with this role can enter (leave blank = everyone)",
+    min_level="Minimum XP level required to enter (0 = no requirement)",
+    channel="Channel to post giveaway (leave blank = current channel)"
+)
+async def slash_giveaway_start(
+    i: discord.Interaction,
+    prize: str,
+    duration: str,
+    winners: int = 1,
+    description: str = "",
+    required_role: Optional[discord.Role] = None,
+    min_level: int = 0,
+    channel: Optional[discord.TextChannel] = None
+):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+
+    # Parse duration
+    dur_secs = None
+    dur_str  = duration.strip().lower()
+    m = re.fullmatch(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?", dur_str)
+    if m and any(m.group(x) for x in (1, 2, 3)):
+        dur_secs = (int(m.group(1) or 0) * 86400
+                  + int(m.group(2) or 0) * 3600
+                  + int(m.group(3) or 0) * 60)
+    if not dur_secs or dur_secs <= 0:
+        return await i.response.send_message(
+            embed=error_embed("Invalid duration. Examples: `1h`, `30m`, `2h30m`, `1d`"), ephemeral=True)
+    if dur_secs > 7 * 86400:
+        return await i.response.send_message(
+            embed=error_embed("Maximum giveaway duration is **7 days**."), ephemeral=True)
+    if not (1 <= winners <= 20):
+        return await i.response.send_message(
+            embed=error_embed("Winners must be between 1 and 20."), ephemeral=True)
+    if min_level < 0:
+        return await i.response.send_message(
+            embed=error_embed("Min level cannot be negative."), ephemeral=True)
+
+    target_ch = channel or i.channel
+    ends_ts   = discord.utils.utcnow().timestamp() + dur_secs
+
+    gw = {
+        "prize":         prize,
+        "description":   description.strip(),
+        "winner_count":  winners,
+        "host_id":       i.user.id,
+        "channel_id":    target_ch.id,
+        "guild_id":      i.guild.id,
+        "ends_ts":       ends_ts,
+        "entries":       [],
+        "winners":       [],
+        "ended":         False,
+        "message_id":    0,
+        "required_role": required_role.id if required_role else None,
+        "min_level":     min_level,
+    }
+
+    embed = build_giveaway_embed(gw)
+    try:
+        msg = await target_ch.send(embed=embed)
+        await msg.add_reaction("🎉")
+    except discord.Forbidden:
+        return await i.response.send_message(
+            embed=error_embed(f"I can't send messages in {target_ch.mention}."), ephemeral=True)
+
+    gw["message_id"] = msg.id
+    active_giveaways[msg.id] = gw
+
+    # Schedule end
+    async def giveaway_timer():
+        await asyncio.sleep(dur_secs)
+        if msg.id in active_giveaways:
+            await end_giveaway(active_giveaways[msg.id])
+
+    asyncio.create_task(giveaway_timer())
+
+    ends_dt = datetime.datetime.utcfromtimestamp(ends_ts).replace(tzinfo=datetime.timezone.utc)
+
+    # Build confirmation embed
+    confirm = success_embed(
+        f"🎊 Giveaway started in {target_ch.mention}!\n\n"
+        f"🎁 **Prize:** {prize}\n"
+        f"🏅 **Winners:** {winners}\n"
+        f"⏰ **Ends:** {discord.utils.format_dt(ends_dt, 'R')}"
+    )
+    if description:
+        confirm.add_field(name="📝 Description", value=description, inline=False)
+    if required_role:
+        confirm.add_field(name="🎭 Required Role", value=required_role.mention, inline=True)
+    if min_level > 0:
+        confirm.add_field(name="⭐ Min Level",    value=str(min_level),         inline=True)
+    await i.response.send_message(embed=confirm, ephemeral=True)
+
+
+@giveaway_group.command(name="end", description="Force-end an active giveaway immediately. Requires Manage Server.")
+@app_commands.describe(message_id="Message ID of the giveaway to end")
+async def slash_giveaway_end(i: discord.Interaction, message_id: str):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    try:
+        mid = int(message_id.strip())
+    except ValueError:
+        return await i.response.send_message(embed=error_embed("Invalid message ID."), ephemeral=True)
+
+    gw = active_giveaways.get(mid)
+    if not gw:
+        return await i.response.send_message(
+            embed=error_embed("No active giveaway found with that message ID."), ephemeral=True)
+    if gw["guild_id"] != i.guild.id:
+        return await i.response.send_message(embed=error_embed("That giveaway is not in this server."), ephemeral=True)
+
+    await i.response.send_message(embed=info_embed("⏩ Ending giveaway...", f"Force-ending **{gw['prize']}**."))
+    await end_giveaway(gw)
+
+
+@giveaway_group.command(name="reroll", description="Reroll winner(s) for an ended giveaway. Requires Manage Server.")
+@app_commands.describe(
+    message_id="Message ID of the ended giveaway",
+    count="How many new winners to pick (default: 1)"
+)
+async def slash_giveaway_reroll(i: discord.Interaction, message_id: str, count: int = 1):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    try:
+        mid = int(message_id.strip())
+    except ValueError:
+        return await i.response.send_message(embed=error_embed("Invalid message ID."), ephemeral=True)
+
+    # Try to fetch message and re-collect entries
+    try:
+        msg = await i.channel.fetch_message(mid)
+    except discord.NotFound:
+        return await i.response.send_message(embed=error_embed("Message not found in this channel."), ephemeral=True)
+
+    entries = []
+    for reaction in msg.reactions:
+        if str(reaction.emoji) == "🎉":
+            async for user in reaction.users():
+                if not user.bot:
+                    entries.append(user.id)
+            break
+
+    if not entries:
+        return await i.response.send_message(embed=error_embed("No entries found on that message."), ephemeral=True)
+
+    count   = max(1, min(count, len(entries)))
+    winners = random.sample(list(set(entries)), count)
+    winner_str = " ".join(f"<@{w}>" for w in winners)
+
+    embed = discord.Embed(
+        title="🔁 Giveaway Rerolled!",
+        description=(
+            f"New winner{'s' if count > 1 else ''}: {winner_str}\n\n"
+            f"🔗 [Jump to Giveaway](https://discord.com/channels/{i.guild.id}/{i.channel.id}/{mid})"
+        ),
+        color=0xF59E0B,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="JoyCannot Giveaway System")
+    await i.response.send_message(content=winner_str, embed=embed)
+
+
+@giveaway_group.command(name="list", description="Show all active giveaways in this server.")
+async def slash_giveaway_list(i: discord.Interaction):
+    guild_gws = [gw for gw in active_giveaways.values() if gw.get("guild_id") == i.guild.id]
+    if not guild_gws:
+        return await i.response.send_message(embed=info_embed("🎊 Giveaways", "No active giveaways right now."))
+
+    embed = discord.Embed(title="🎊 Active Giveaways", color=EMBED_COLOR, timestamp=discord.utils.utcnow())
+    for gw in guild_gws[:10]:
+        ends_dt = datetime.datetime.utcfromtimestamp(gw["ends_ts"]).replace(tzinfo=datetime.timezone.utc)
+        ch      = bot.get_channel(gw["channel_id"])
+        embed.add_field(
+            name=f"🎁 {gw['prize']}",
+            value=(
+                f"**Channel:** {ch.mention if ch else 'unknown'}\n"
+                f"**Ends:** {discord.utils.format_dt(ends_dt, 'R')}\n"
+                f"**Winners:** {gw['winner_count']} ⠀·⠀ "
+                f"**Entries:** {len(gw['entries'])}\n"
+                f"**ID:** `{gw['message_id']}`"
+            ),
+            inline=False
+        )
+    embed.set_footer(text=f"JoyCannot Giveaway System • {len(guild_gws)} active")
+    await i.response.send_message(embed=embed)
+
+
+bot.tree.add_command(giveaway_group)
 
 
 if __name__ == "__main__":
