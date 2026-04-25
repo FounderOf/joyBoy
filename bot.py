@@ -1439,9 +1439,6 @@ async def do_help(reply_fn):
     embed.add_field(name="🎊 Giveaway", value=(
         f"{lbl('giveaway start')} · {lbl('giveaway end')} · {lbl('giveaway reroll')} · {lbl('giveaway list')}"
     ), inline=False)
-    embed.add_field(name="👑 Owner Only (prefix)", value=(
-        "`!Joy maintenance` · `!Joy premium` · `!Joy setchannel`"
-    ), inline=False)
     await reply_fn(embed=embed)
 
 # ─────────────────────────────────────────────
