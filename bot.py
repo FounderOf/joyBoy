@@ -6,11 +6,11 @@ License: MIT
 
 Changes v1.3.0:
   - Payment methods now support real account details (QRIS URL/info, Bank rekening, E-Wallet number)
-  - Premium command lock system: lock any command as ðŸ’Ž PREMIUM via interactive UI
+  - Premium command lock system: lock any command as 💎 PREMIUM via interactive UI
   - Premium label auto-applied to slash command descriptions after lock/unlock (re-sync)
   - Prefix users get embed notification when trying a premium-locked command
   - All owner/setup commands now use embed + button UI (maintenance, setchannel)
-  - Maintenance broadcast: compose â†’ preview â†’ confirm flow with Edit/Cancel buttons
+  - Maintenance broadcast: compose → preview → confirm flow with Edit/Cancel buttons
   - setchannel: modal-based input with server list view
   - Premium is per-user ID only (no per-server role exploit)
   - Guild premium nickname: owner activates 'JoyCannot Premium' nickname per server
@@ -32,18 +32,18 @@ from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # CONSTANTS
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 EMBED_COLOR = 0xD97706   # Dark orange
 BOT_PREFIX  = "!Joy "
 CONFIG_PATH = "data/config.json"
 WIB         = pytz.timezone("Asia/Jakarta")
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # CONFIG MANAGER
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 def load_config() -> dict:
     os.makedirs("data", exist_ok=True)
@@ -69,7 +69,7 @@ def load_config() -> dict:
         return default
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)
-    # â”€â”€ Migrate old boolean payment_methods â†’ new dict format â”€â”€
+    # ── Migrate old boolean payment_methods → new dict format ──
     pm = data.get("payment_methods", {})
     if pm and isinstance(next(iter(pm.values()), None), bool):
         data["payment_methods"] = {
@@ -91,20 +91,20 @@ def load_config() -> dict:
     data.setdefault("vote_discount",    10)
     data.setdefault("topgg_webhook_secret", "")
     data.setdefault("votes",            {})
-    # â”€â”€ Migrate whitelist_role â†’ support_role in all guilds â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Migrate whitelist_role → support_role in all guilds ──────────────
     for gid, gc in data.get("guilds", {}).items():
         tkt = gc.get("ticket", {})
         if "whitelist_role" in tkt and "support_role" not in tkt:
             tkt["support_role"] = tkt.pop("whitelist_role")
-        # â”€â”€ Ensure leveling/quest keys exist per guild â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Ensure leveling/quest keys exist per guild ────────────────────
         gc.setdefault("leveling_enabled",   True)
         gc.setdefault("level_channel",      None)   # channel for level-up notifs
         gc.setdefault("xp_per_message",     (15, 25))  # [min, max] XP per msg
         gc.setdefault("xp_cooldown",        60)     # seconds between XP awards
-        gc.setdefault("members_xp",         {})     # uid â†’ {xp, level, last_msg_ts}
-        gc.setdefault("level_roles",        {})     # level_str â†’ role_id reward
+        gc.setdefault("members_xp",         {})     # uid → {xp, level, last_msg_ts}
+        gc.setdefault("level_roles",        {})     # level_str → role_id reward
         gc.setdefault("quests",             [])     # list of quest dicts
-        gc.setdefault("member_quests",      {})     # uid â†’ {quest_id â†’ progress}
+        gc.setdefault("member_quests",      {})     # uid → {quest_id → progress}
     save_config(data)
     return data
 
@@ -129,7 +129,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
             },
             "warnings": {},
             "active_tickets": {},
-            # â”€â”€ Leveling & Quest â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Leveling & Quest ──────────────────────────────────────────
             "leveling_enabled": True,
             "level_channel":    None,
             "quest_channel":    None,   # channel for quest list + completion notifs
@@ -142,7 +142,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
         }
         save_config(cfg)
     gc = cfg["guilds"][gid]
-    # Migrate whitelist_role â†’ support_role if needed
+    # Migrate whitelist_role → support_role if needed
     tkt = gc.get("ticket", {})
     if "whitelist_role" in tkt and "support_role" not in tkt:
         tkt["support_role"] = tkt.pop("whitelist_role")
@@ -159,9 +159,9 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
     gc.setdefault("member_quests",    {})
     return gc
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # LANGUAGE SYSTEM
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 LANGUAGES = {
     "en": "English", "id": "Indonesian", "de": "German",
@@ -171,124 +171,124 @@ LANGUAGES = {
 
 STRINGS = {
     "en": {
-        "no_perm":         "âŒ You do not have permission to use this command.",
-        "kick_success":    "âœ… {user} has been kicked. Reason: {reason}",
-        "ban_success":     "âœ… {user} has been banned. Reason: {reason}",
-        "timeout_success": "âœ… {user} has been timed out for {duration} minutes.",
-        "warn_success":    "âš ï¸ {user} has been warned. Reason: {reason}",
-        "role_add":        "âœ… Role {role} added to {user}.",
-        "role_remove":     "âœ… Role {role} removed from {user}.",
-        "move_success":    "âœ… {user} moved to {channel}.",
-        "emoji_add":       "âœ… Emoji {name} added.",
-        "ticket_open":     "ðŸŽ« Your ticket has been created: {channel}",
-        "ticket_exists":   "âŒ You already have an open ticket.",
-        "lang_set":        "âœ… Language set to {lang}.",
-        "antispam_ban":    "ðŸ”¨ {user} was banned for cross-channel spam.",
+        "no_perm":         "❌ You do not have permission to use this command.",
+        "kick_success":    "✅ {user} has been kicked. Reason: {reason}",
+        "ban_success":     "✅ {user} has been banned. Reason: {reason}",
+        "timeout_success": "✅ {user} has been timed out for {duration} minutes.",
+        "warn_success":    "⚠️ {user} has been warned. Reason: {reason}",
+        "role_add":        "✅ Role {role} added to {user}.",
+        "role_remove":     "✅ Role {role} removed from {user}.",
+        "move_success":    "✅ {user} moved to {channel}.",
+        "emoji_add":       "✅ Emoji {name} added.",
+        "ticket_open":     "🎫 Your ticket has been created: {channel}",
+        "ticket_exists":   "❌ You already have an open ticket.",
+        "lang_set":        "✅ Language set to {lang}.",
+        "antispam_ban":    "🔨 {user} was banned for cross-channel spam.",
     },
     "id": {
-        "no_perm":         "âŒ Kamu tidak memiliki izin untuk menggunakan perintah ini.",
-        "kick_success":    "âœ… {user} telah dikick. Alasan: {reason}",
-        "ban_success":     "âœ… {user} telah diban. Alasan: {reason}",
-        "timeout_success": "âœ… {user} telah di-timeout selama {duration} menit.",
-        "warn_success":    "âš ï¸ {user} telah diperingatkan. Alasan: {reason}",
-        "role_add":        "âœ… Peran {role} ditambahkan ke {user}.",
-        "role_remove":     "âœ… Peran {role} dihapus dari {user}.",
-        "move_success":    "âœ… {user} dipindahkan ke {channel}.",
-        "emoji_add":       "âœ… Emoji {name} berhasil ditambahkan.",
-        "ticket_open":     "ðŸŽ« Tiket kamu telah dibuat: {channel}",
-        "ticket_exists":   "âŒ Kamu sudah memiliki tiket yang terbuka.",
-        "lang_set":        "âœ… Bahasa diatur ke {lang}.",
-        "antispam_ban":    "ðŸ”¨ {user} diban karena spam lintas saluran.",
+        "no_perm":         "❌ Kamu tidak memiliki izin untuk menggunakan perintah ini.",
+        "kick_success":    "✅ {user} telah dikick. Alasan: {reason}",
+        "ban_success":     "✅ {user} telah diban. Alasan: {reason}",
+        "timeout_success": "✅ {user} telah di-timeout selama {duration} menit.",
+        "warn_success":    "⚠️ {user} telah diperingatkan. Alasan: {reason}",
+        "role_add":        "✅ Peran {role} ditambahkan ke {user}.",
+        "role_remove":     "✅ Peran {role} dihapus dari {user}.",
+        "move_success":    "✅ {user} dipindahkan ke {channel}.",
+        "emoji_add":       "✅ Emoji {name} berhasil ditambahkan.",
+        "ticket_open":     "🎫 Tiket kamu telah dibuat: {channel}",
+        "ticket_exists":   "❌ Kamu sudah memiliki tiket yang terbuka.",
+        "lang_set":        "✅ Bahasa diatur ke {lang}.",
+        "antispam_ban":    "🔨 {user} diban karena spam lintas saluran.",
     },
     "de": {
-        "no_perm":         "âŒ Du hast keine Berechtigung, diesen Befehl zu verwenden.",
-        "kick_success":    "âœ… {user} wurde gekickt. Grund: {reason}",
-        "ban_success":     "âœ… {user} wurde gebannt. Grund: {reason}",
-        "timeout_success": "âœ… {user} wurde fÃ¼r {duration} Minuten stummgeschaltet.",
-        "warn_success":    "âš ï¸ {user} wurde verwarnt. Grund: {reason}",
-        "role_add":        "âœ… Rolle {role} zu {user} hinzugefÃ¼gt.",
-        "role_remove":     "âœ… Rolle {role} von {user} entfernt.",
-        "move_success":    "âœ… {user} wurde nach {channel} verschoben.",
-        "emoji_add":       "âœ… Emoji {name} hinzugefÃ¼gt.",
-        "ticket_open":     "ðŸŽ« Dein Ticket wurde erstellt: {channel}",
-        "ticket_exists":   "âŒ Du hast bereits ein offenes Ticket.",
-        "lang_set":        "âœ… Sprache auf {lang} gesetzt.",
-        "antispam_ban":    "ðŸ”¨ {user} wurde wegen kanalÃ¼bergreifendem Spam gebannt.",
+        "no_perm":         "❌ Du hast keine Berechtigung, diesen Befehl zu verwenden.",
+        "kick_success":    "✅ {user} wurde gekickt. Grund: {reason}",
+        "ban_success":     "✅ {user} wurde gebannt. Grund: {reason}",
+        "timeout_success": "✅ {user} wurde für {duration} Minuten stummgeschaltet.",
+        "warn_success":    "⚠️ {user} wurde verwarnt. Grund: {reason}",
+        "role_add":        "✅ Rolle {role} zu {user} hinzugefügt.",
+        "role_remove":     "✅ Rolle {role} von {user} entfernt.",
+        "move_success":    "✅ {user} wurde nach {channel} verschoben.",
+        "emoji_add":       "✅ Emoji {name} hinzugefügt.",
+        "ticket_open":     "🎫 Dein Ticket wurde erstellt: {channel}",
+        "ticket_exists":   "❌ Du hast bereits ein offenes Ticket.",
+        "lang_set":        "✅ Sprache auf {lang} gesetzt.",
+        "antispam_ban":    "🔨 {user} wurde wegen kanalübergreifendem Spam gebannt.",
     },
     "ar": {
-        "no_perm":         "âŒ Ù„ÙŠØ³ Ù„Ø¯ÙŠÙƒ ØµÙ„Ø§Ø­ÙŠØ© Ø§Ø³ØªØ®Ø¯Ø§Ù… Ù‡Ø°Ø§ Ø§Ù„Ø£Ù…Ø±.",
-        "kick_success":    "âœ… ØªÙ… Ø·Ø±Ø¯ {user}. Ø§Ù„Ø³Ø¨Ø¨: {reason}",
-        "ban_success":     "âœ… ØªÙ… Ø­Ø¸Ø± {user}. Ø§Ù„Ø³Ø¨Ø¨: {reason}",
-        "timeout_success": "âœ… ØªÙ… Ø¥Ø³ÙƒØ§Øª {user} Ù„Ù…Ø¯Ø© {duration} Ø¯Ù‚ÙŠÙ‚Ø©.",
-        "warn_success":    "âš ï¸ ØªÙ… ØªØ­Ø°ÙŠØ± {user}. Ø§Ù„Ø³Ø¨Ø¨: {reason}",
-        "role_add":        "âœ… ØªÙ…Øª Ø¥Ø¶Ø§ÙØ© Ø¯ÙˆØ± {role} Ø¥Ù„Ù‰ {user}.",
-        "role_remove":     "âœ… ØªÙ…Øª Ø¥Ø²Ø§Ù„Ø© Ø¯ÙˆØ± {role} Ù…Ù† {user}.",
-        "move_success":    "âœ… ØªÙ… Ù†Ù‚Ù„ {user} Ø¥Ù„Ù‰ {channel}.",
-        "emoji_add":       "âœ… ØªÙ…Øª Ø¥Ø¶Ø§ÙØ© Ø§Ù„Ø¥ÙŠÙ…ÙˆØ¬ÙŠ {name}.",
-        "ticket_open":     "ðŸŽ« ØªÙ… Ø¥Ù†Ø´Ø§Ø¡ ØªØ°ÙƒØ±ØªÙƒ: {channel}",
-        "ticket_exists":   "âŒ Ù„Ø¯ÙŠÙƒ ØªØ°ÙƒØ±Ø© Ù…ÙØªÙˆØ­Ø© Ø¨Ø§Ù„ÙØ¹Ù„.",
-        "lang_set":        "âœ… ØªÙ… Ø¶Ø¨Ø· Ø§Ù„Ù„ØºØ© Ø¹Ù„Ù‰ {lang}.",
-        "antispam_ban":    "ðŸ”¨ ØªÙ… Ø­Ø¸Ø± {user} Ø¨Ø³Ø¨Ø¨ Ø§Ù„Ø±Ø³Ø§Ø¦Ù„ Ø§Ù„Ù…ØªÙƒØ±Ø±Ø© Ø¹Ø¨Ø± Ø§Ù„Ù‚Ù†ÙˆØ§Øª.",
+        "no_perm":         "❌ ليس لديك صلاحية استخدام هذا الأمر.",
+        "kick_success":    "✅ تم طرد {user}. السبب: {reason}",
+        "ban_success":     "✅ تم حظر {user}. السبب: {reason}",
+        "timeout_success": "✅ تم إسكات {user} لمدة {duration} دقيقة.",
+        "warn_success":    "⚠️ تم تحذير {user}. السبب: {reason}",
+        "role_add":        "✅ تمت إضافة دور {role} إلى {user}.",
+        "role_remove":     "✅ تمت إزالة دور {role} من {user}.",
+        "move_success":    "✅ تم نقل {user} إلى {channel}.",
+        "emoji_add":       "✅ تمت إضافة الإيموجي {name}.",
+        "ticket_open":     "🎫 تم إنشاء تذكرتك: {channel}",
+        "ticket_exists":   "❌ لديك تذكرة مفتوحة بالفعل.",
+        "lang_set":        "✅ تم ضبط اللغة على {lang}.",
+        "antispam_ban":    "🔨 تم حظر {user} بسبب الرسائل المتكررة عبر القنوات.",
     },
     "th": {
-        "no_perm":         "âŒ à¸„à¸¸à¸“à¹„à¸¡à¹ˆà¸¡à¸µà¸ªà¸´à¸—à¸˜à¸´à¹Œà¹ƒà¸Šà¹‰à¸„à¸³à¸ªà¸±à¹ˆà¸‡à¸™à¸µà¹‰",
-        "kick_success":    "âœ… {user} à¸–à¸¹à¸à¹€à¸•à¸°à¸­à¸­à¸à¹à¸¥à¹‰à¸§ à¹€à¸«à¸•à¸¸à¸œà¸¥: {reason}",
-        "ban_success":     "âœ… {user} à¸–à¸¹à¸à¹à¸šà¸™à¹à¸¥à¹‰à¸§ à¹€à¸«à¸•à¸¸à¸œà¸¥: {reason}",
-        "timeout_success": "âœ… {user} à¸–à¸¹à¸ timeout {duration} à¸™à¸²à¸—à¸µ",
-        "warn_success":    "âš ï¸ {user} à¹„à¸”à¹‰à¸£à¸±à¸šà¸„à¸³à¹€à¸•à¸·à¸­à¸™ à¹€à¸«à¸•à¸¸à¸œà¸¥: {reason}",
-        "role_add":        "âœ… à¹€à¸žà¸´à¹ˆà¸¡à¸šà¸—à¸šà¸²à¸— {role} à¹ƒà¸«à¹‰ {user} à¹à¸¥à¹‰à¸§",
-        "role_remove":     "âœ… à¸™à¸³à¸šà¸—à¸šà¸²à¸— {role} à¸­à¸­à¸à¸ˆà¸²à¸ {user} à¹à¸¥à¹‰à¸§",
-        "move_success":    "âœ… à¸¢à¹‰à¸²à¸¢ {user} à¹„à¸›à¸—à¸µà¹ˆ {channel} à¹à¸¥à¹‰à¸§",
-        "emoji_add":       "âœ… à¹€à¸žà¸´à¹ˆà¸¡à¸­à¸´à¹‚à¸¡à¸ˆà¸´ {name} à¹à¸¥à¹‰à¸§",
-        "ticket_open":     "ðŸŽ« à¸ªà¸£à¹‰à¸²à¸‡à¸•à¸±à¹‹à¸§à¸‚à¸­à¸‡à¸„à¸¸à¸“à¹à¸¥à¹‰à¸§: {channel}",
-        "ticket_exists":   "âŒ à¸„à¸¸à¸“à¸¡à¸µà¸•à¸±à¹‹à¸§à¸—à¸µà¹ˆà¹€à¸›à¸´à¸”à¸­à¸¢à¸¹à¹ˆà¹à¸¥à¹‰à¸§",
-        "lang_set":        "âœ… à¸•à¸±à¹‰à¸‡à¸ à¸²à¸©à¸²à¹€à¸›à¹‡à¸™ {lang} à¹à¸¥à¹‰à¸§",
-        "antispam_ban":    "ðŸ”¨ {user} à¸–à¸¹à¸à¹à¸šà¸™à¹€à¸™à¸·à¹ˆà¸­à¸‡à¸ˆà¸²à¸à¸ªà¹ˆà¸‡à¸‚à¹‰à¸­à¸„à¸§à¸²à¸¡à¸‹à¹‰à¸³à¹ƒà¸™à¸«à¸¥à¸²à¸¢à¸Šà¹ˆà¸­à¸‡",
+        "no_perm":         "❌ คุณไม่มีสิทธิ์ใช้คำสั่งนี้",
+        "kick_success":    "✅ {user} ถูกเตะออกแล้ว เหตุผล: {reason}",
+        "ban_success":     "✅ {user} ถูกแบนแล้ว เหตุผล: {reason}",
+        "timeout_success": "✅ {user} ถูก timeout {duration} นาที",
+        "warn_success":    "⚠️ {user} ได้รับคำเตือน เหตุผล: {reason}",
+        "role_add":        "✅ เพิ่มบทบาท {role} ให้ {user} แล้ว",
+        "role_remove":     "✅ นำบทบาท {role} ออกจาก {user} แล้ว",
+        "move_success":    "✅ ย้าย {user} ไปที่ {channel} แล้ว",
+        "emoji_add":       "✅ เพิ่มอิโมจิ {name} แล้ว",
+        "ticket_open":     "🎫 สร้างตั๋วของคุณแล้ว: {channel}",
+        "ticket_exists":   "❌ คุณมีตั๋วที่เปิดอยู่แล้ว",
+        "lang_set":        "✅ ตั้งภาษาเป็น {lang} แล้ว",
+        "antispam_ban":    "🔨 {user} ถูกแบนเนื่องจากส่งข้อความซ้ำในหลายช่อง",
     },
     "vi": {
-        "no_perm":         "âŒ Báº¡n khÃ´ng cÃ³ quyá»n sá»­ dá»¥ng lá»‡nh nÃ y.",
-        "kick_success":    "âœ… {user} Ä‘Ã£ bá»‹ kick. LÃ½ do: {reason}",
-        "ban_success":     "âœ… {user} Ä‘Ã£ bá»‹ ban. LÃ½ do: {reason}",
-        "timeout_success": "âœ… {user} Ä‘Ã£ bá»‹ timeout {duration} phÃºt.",
-        "warn_success":    "âš ï¸ {user} Ä‘Ã£ bá»‹ cáº£nh bÃ¡o. LÃ½ do: {reason}",
-        "role_add":        "âœ… ÄÃ£ thÃªm vai trÃ² {role} cho {user}.",
-        "role_remove":     "âœ… ÄÃ£ xÃ³a vai trÃ² {role} khá»i {user}.",
-        "move_success":    "âœ… ÄÃ£ chuyá»ƒn {user} sang {channel}.",
-        "emoji_add":       "âœ… ÄÃ£ thÃªm emoji {name}.",
-        "ticket_open":     "ðŸŽ« Ticket cá»§a báº¡n Ä‘Ã£ Ä‘Æ°á»£c táº¡o: {channel}",
-        "ticket_exists":   "âŒ Báº¡n Ä‘Ã£ cÃ³ ticket Ä‘ang má»Ÿ.",
-        "lang_set":        "âœ… NgÃ´n ngá»¯ Ä‘Ã£ Ä‘Æ°á»£c Ä‘áº·t thÃ nh {lang}.",
-        "antispam_ban":    "ðŸ”¨ {user} Ä‘Ã£ bá»‹ ban do spam trÃªn nhiá»u kÃªnh.",
+        "no_perm":         "❌ Bạn không có quyền sử dụng lệnh này.",
+        "kick_success":    "✅ {user} đã bị kick. Lý do: {reason}",
+        "ban_success":     "✅ {user} đã bị ban. Lý do: {reason}",
+        "timeout_success": "✅ {user} đã bị timeout {duration} phút.",
+        "warn_success":    "⚠️ {user} đã bị cảnh báo. Lý do: {reason}",
+        "role_add":        "✅ Đã thêm vai trò {role} cho {user}.",
+        "role_remove":     "✅ Đã xóa vai trò {role} khỏi {user}.",
+        "move_success":    "✅ Đã chuyển {user} sang {channel}.",
+        "emoji_add":       "✅ Đã thêm emoji {name}.",
+        "ticket_open":     "🎫 Ticket của bạn đã được tạo: {channel}",
+        "ticket_exists":   "❌ Bạn đã có ticket đang mở.",
+        "lang_set":        "✅ Ngôn ngữ đã được đặt thành {lang}.",
+        "antispam_ban":    "🔨 {user} đã bị ban do spam trên nhiều kênh.",
     },
     "ja": {
-        "no_perm":         "âŒ ã“ã®ã‚³ãƒžãƒ³ãƒ‰ã‚’ä½¿ç”¨ã™ã‚‹æ¨©é™ãŒã‚ã‚Šã¾ã›ã‚“ã€‚",
-        "kick_success":    "âœ… {user} ã‚’ã‚­ãƒƒã‚¯ã—ã¾ã—ãŸã€‚ç†ç”±: {reason}",
-        "ban_success":     "âœ… {user} ã‚’BANã—ã¾ã—ãŸã€‚ç†ç”±: {reason}",
-        "timeout_success": "âœ… {user} ã‚’{duration}åˆ†ã‚¿ã‚¤ãƒ ã‚¢ã‚¦ãƒˆã—ã¾ã—ãŸã€‚",
-        "warn_success":    "âš ï¸ {user} ã«è­¦å‘Šã‚’é€ã‚Šã¾ã—ãŸã€‚ç†ç”±: {reason}",
-        "role_add":        "âœ… {user} ã«ãƒ­ãƒ¼ãƒ« {role} ã‚’ä»˜ä¸Žã—ã¾ã—ãŸã€‚",
-        "role_remove":     "âœ… {user} ã‹ã‚‰ãƒ­ãƒ¼ãƒ« {role} ã‚’å‰Šé™¤ã—ã¾ã—ãŸã€‚",
-        "move_success":    "âœ… {user} ã‚’ {channel} ã«ç§»å‹•ã—ã¾ã—ãŸã€‚",
-        "emoji_add":       "âœ… çµµæ–‡å­— {name} ã‚’è¿½åŠ ã—ã¾ã—ãŸã€‚",
-        "ticket_open":     "ðŸŽ« ãƒã‚±ãƒƒãƒˆãŒä½œæˆã•ã‚Œã¾ã—ãŸ: {channel}",
-        "ticket_exists":   "âŒ ã™ã§ã«é–‹ã„ã¦ã„ã‚‹ãƒã‚±ãƒƒãƒˆãŒã‚ã‚Šã¾ã™ã€‚",
-        "lang_set":        "âœ… è¨€èªžã‚’ {lang} ã«è¨­å®šã—ã¾ã—ãŸã€‚",
-        "antispam_ban":    "ðŸ”¨ {user} ã¯è¤‡æ•°ãƒãƒ£ãƒ³ãƒãƒ«ã¸ã®ã‚¹ãƒ‘ãƒ ã®ãŸã‚BANã•ã‚Œã¾ã—ãŸã€‚",
+        "no_perm":         "❌ このコマンドを使用する権限がありません。",
+        "kick_success":    "✅ {user} をキックしました。理由: {reason}",
+        "ban_success":     "✅ {user} をBANしました。理由: {reason}",
+        "timeout_success": "✅ {user} を{duration}分タイムアウトしました。",
+        "warn_success":    "⚠️ {user} に警告を送りました。理由: {reason}",
+        "role_add":        "✅ {user} にロール {role} を付与しました。",
+        "role_remove":     "✅ {user} からロール {role} を削除しました。",
+        "move_success":    "✅ {user} を {channel} に移動しました。",
+        "emoji_add":       "✅ 絵文字 {name} を追加しました。",
+        "ticket_open":     "🎫 チケットが作成されました: {channel}",
+        "ticket_exists":   "❌ すでに開いているチケットがあります。",
+        "lang_set":        "✅ 言語を {lang} に設定しました。",
+        "antispam_ban":    "🔨 {user} は複数チャンネルへのスパムのためBANされました。",
     },
     "ko": {
-        "no_perm":         "âŒ ì´ ëª…ë ¹ì–´ë¥¼ ì‚¬ìš©í•  ê¶Œí•œì´ ì—†ìŠµë‹ˆë‹¤.",
-        "kick_success":    "âœ… {user}ì„(ë¥¼) ì¶”ë°©í–ˆìŠµë‹ˆë‹¤. ì‚¬ìœ : {reason}",
-        "ban_success":     "âœ… {user}ì„(ë¥¼) ì°¨ë‹¨í–ˆìŠµë‹ˆë‹¤. ì‚¬ìœ : {reason}",
-        "timeout_success": "âœ… {user}ì„(ë¥¼) {duration}ë¶„ íƒ€ìž„ì•„ì›ƒí–ˆìŠµë‹ˆë‹¤.",
-        "warn_success":    "âš ï¸ {user}ì—ê²Œ ê²½ê³ ë¥¼ ë³´ëƒˆìŠµë‹ˆë‹¤. ì‚¬ìœ : {reason}",
-        "role_add":        "âœ… {user}ì—ê²Œ ì—­í•  {role}ì„(ë¥¼) ë¶€ì—¬í–ˆìŠµë‹ˆë‹¤.",
-        "role_remove":     "âœ… {user}ì—ê²Œì„œ ì—­í•  {role}ì„(ë¥¼) ì œê±°í–ˆìŠµë‹ˆë‹¤.",
-        "move_success":    "âœ… {user}ì„(ë¥¼) {channel}ë¡œ ì´ë™í–ˆìŠµë‹ˆë‹¤.",
-        "emoji_add":       "âœ… ì´ëª¨ì§€ {name}ì„(ë¥¼) ì¶”ê°€í–ˆìŠµë‹ˆë‹¤.",
-        "ticket_open":     "ðŸŽ« í‹°ì¼“ì´ ìƒì„±ë˜ì—ˆìŠµë‹ˆë‹¤: {channel}",
-        "ticket_exists":   "âŒ ì´ë¯¸ ì—´ë ¤ ìžˆëŠ” í‹°ì¼“ì´ ìžˆìŠµë‹ˆë‹¤.",
-        "lang_set":        "âœ… ì–¸ì–´ê°€ {lang}ìœ¼ë¡œ ì„¤ì •ë˜ì—ˆìŠµë‹ˆë‹¤.",
-        "antispam_ban":    "ðŸ”¨ {user}ì´(ê°€) ì—¬ëŸ¬ ì±„ë„ì— ìŠ¤íŒ¸ì„ ë³´ë‚´ ì°¨ë‹¨ë˜ì—ˆìŠµë‹ˆë‹¤.",
+        "no_perm":         "❌ 이 명령어를 사용할 권한이 없습니다.",
+        "kick_success":    "✅ {user}을(를) 추방했습니다. 사유: {reason}",
+        "ban_success":     "✅ {user}을(를) 차단했습니다. 사유: {reason}",
+        "timeout_success": "✅ {user}을(를) {duration}분 타임아웃했습니다.",
+        "warn_success":    "⚠️ {user}에게 경고를 보냈습니다. 사유: {reason}",
+        "role_add":        "✅ {user}에게 역할 {role}을(를) 부여했습니다.",
+        "role_remove":     "✅ {user}에게서 역할 {role}을(를) 제거했습니다.",
+        "move_success":    "✅ {user}을(를) {channel}로 이동했습니다.",
+        "emoji_add":       "✅ 이모지 {name}을(를) 추가했습니다.",
+        "ticket_open":     "🎫 티켓이 생성되었습니다: {channel}",
+        "ticket_exists":   "❌ 이미 열려 있는 티켓이 있습니다.",
+        "lang_set":        "✅ 언어가 {lang}으로 설정되었습니다.",
+        "antispam_ban":    "🔨 {user}이(가) 여러 채널에 스팸을 보내 차단되었습니다.",
     },
 }
 
@@ -298,9 +298,9 @@ def t(cfg: dict, guild_id: int, key: str, **kwargs) -> str:
     s    = STRINGS.get(lang, STRINGS["en"]).get(key, STRINGS["en"].get(key, key))
     return s.format(**kwargs)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # EMBED HELPERS
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 def base_embed(title: str, description: str = "", color: int = EMBED_COLOR) -> discord.Embed:
     e = discord.Embed(title=title, description=description, color=color)
@@ -309,20 +309,20 @@ def base_embed(title: str, description: str = "", color: int = EMBED_COLOR) -> d
     return e
 
 def success_embed(desc: str) -> discord.Embed:
-    return base_embed("âœ… Success", desc, 0x22C55E)
+    return base_embed("✅ Success", desc, 0x22C55E)
 
 def error_embed(desc: str) -> discord.Embed:
-    return base_embed("âŒ Error", desc, 0xEF4444)
+    return base_embed("❌ Error", desc, 0xEF4444)
 
 def info_embed(title: str, desc: str) -> discord.Embed:
     return base_embed(title, desc)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # DURATION PARSER
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 def parse_duration(s: str) -> Optional[int]:
-    """'1h30m' â†’ seconds (int). Returns None if invalid."""
+    """'1h30m' → seconds (int). Returns None if invalid."""
     m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?", s.strip())
     if not m or (not m.group(1) and not m.group(2)):
         return None
@@ -336,9 +336,9 @@ def fmt_duration(secs: int) -> str:
     if m: parts.append(f"{m}m")
     return " ".join(parts) or "0m"
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # BOT SETUP
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 intents                 = discord.Intents.default()
 intents.message_content = True
@@ -347,22 +347,22 @@ intents.guilds          = True
 
 cfg = load_config()
 
-# â”€â”€ Store original command descriptions for premium label system â”€â”€
+# ── Store original command descriptions for premium label system ──
 # Must be declared BEFORE CommandTree subclass uses it.
 ORIGINAL_CMD_DESCRIPTIONS: dict[str, str] = {}
 
-# â”€â”€ Pending payment proof tracker â”€â”€
-# key: user_id (int) â†’ value: dict with order info + asyncio.Event
+# ── Pending payment proof tracker ──
+# key: user_id (int) → value: dict with order info + asyncio.Event
 pending_proofs: dict[int, dict] = {}
 
-# â”€â”€ Subclass CommandTree â€” the ONLY correct way to add a global slash check â”€â”€
+# ── Subclass CommandTree — the ONLY correct way to add a global slash check ──
 class JoyCommandTree(app_commands.CommandTree):
     @staticmethod
     def _resolve_cmd_name(interaction: discord.Interaction) -> Optional[str]:
         """
         Resolve the qualified command name from raw interaction data.
         We CANNOT use interaction.command here because discord.py hasn't
-        resolved it yet at the interaction_check stage â€” it would be None.
+        resolved it yet at the interaction_check stage — it would be None.
         So we read directly from interaction.data instead.
 
         Returns e.g. "kick", "ticket setup", "language set", or None.
@@ -397,24 +397,24 @@ class JoyCommandTree(app_commands.CommandTree):
         """Global gate: block non-premium users from premium-locked slash commands."""
         cmd_name = self._resolve_cmd_name(interaction)
         if not cmd_name:
-            return True  # Not a slash command (button, modal, etc.) â€” always allow
+            return True  # Not a slash command (button, modal, etc.) — always allow
 
         premium_cmds = cfg.get("premium_commands", [])
         if cmd_name not in premium_cmds:
-            return True  # Command not locked â€” allow
+            return True  # Command not locked — allow
 
-        # â”€â”€ Check premium access â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Check premium access ──────────────────────────────────────────
         if user_has_premium(interaction.guild, interaction.user):
             return True
 
-        # â”€â”€ Blocked â€” respond ephemeral â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Blocked — respond ephemeral ────────────────────────────────────
         try:
             await interaction.response.send_message(
                 embed=base_embed(
-                    "ðŸ’Ž Premium Required",
+                    "💎 Premium Required",
                     f"The command `/{cmd_name}` is only available for **Premium** servers or users.\n\n"
-                    "ðŸ“¦ Use `/premium info` to see available packages.\n"
-                    "ðŸ“© Use `/premium order` to subscribe.",
+                    "📦 Use `/premium info` to see available packages.\n"
+                    "📩 Use `/premium order` to subscribe.",
                     color=0xF59E0B),
                 ephemeral=True)
         except discord.InteractionResponded:
@@ -429,9 +429,9 @@ bot = commands.Bot(
     tree_cls=JoyCommandTree,
 )
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # PREMIUM ACCESS HELPERS
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 def user_has_premium(guild: Optional[discord.Guild], user: discord.abc.User) -> bool:
     """
@@ -446,13 +446,13 @@ def user_has_premium(guild: Optional[discord.Guild], user: discord.abc.User) -> 
     return False
 
 PREMIUM_NICK      = "JoyCannot Premium"
-PREMIUM_ROLE_NAME = "â­ JoyCannot Premium"
+PREMIUM_ROLE_NAME = "⭐ JoyCannot Premium"
 PREMIUM_ROLE_COLOR = discord.Color(0xF59E0B)   # amber/yellow
 
 async def set_guild_premium_nick(guild: discord.Guild, activate: bool):
     """
     Activate:
-      1. Create role 'â­ JoyCannot Premium' (yellow) if not exists
+      1. Create role '⭐ JoyCannot Premium' (yellow) if not exists
       2. Assign it to the bot (above all other bot roles so color shows)
       3. Set bot nickname to 'JoyCannot Premium'
 
@@ -464,7 +464,7 @@ async def set_guild_premium_nick(guild: discord.Guild, activate: bool):
     me = guild.me
     try:
         if activate:
-            # â”€â”€ Find or create the premium role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Find or create the premium role ──────────────────────────
             role = discord.utils.get(guild.roles, name=PREMIUM_ROLE_NAME)
             if not role:
                 role = await guild.create_role(
@@ -473,23 +473,23 @@ async def set_guild_premium_nick(guild: discord.Guild, activate: bool):
                     reason="JoyCannot Premium activation"
                 )
 
-            # â”€â”€ Move role just below the bot's highest managed role â”€â”€â”€â”€â”€â”€â”€
+            # ── Move role just below the bot's highest managed role ───────
             try:
                 top_pos = max((r.position for r in me.roles if r.managed), default=1)
                 await role.edit(position=max(top_pos - 1, 1))
             except Exception:
-                pass   # Position edit may fail in some configs â€” not critical
+                pass   # Position edit may fail in some configs — not critical
 
-            # â”€â”€ Assign role to bot if not already â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Assign role to bot if not already ─────────────────────────
             if role not in me.roles:
                 await me.add_roles(role, reason="JoyCannot Premium activation")
 
-            # â”€â”€ Set nickname â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Set nickname ───────────────────────────────────────────────
             await me.edit(nick=PREMIUM_NICK)
-            logging.info(f"[Premium] Activated in {guild.name} â€” role + nick set.")
+            logging.info(f"[Premium] Activated in {guild.name} — role + nick set.")
 
         else:
-            # â”€â”€ Remove & delete the premium role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Remove & delete the premium role ──────────────────────────
             role = discord.utils.get(guild.roles, name=PREMIUM_ROLE_NAME)
             if role:
                 if role in me.roles:
@@ -499,9 +499,9 @@ async def set_guild_premium_nick(guild: discord.Guild, activate: bool):
                 except Exception:
                     pass
 
-            # â”€â”€ Reset nickname â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Reset nickname ─────────────────────────────────────────────
             await me.edit(nick=None)
-            logging.info(f"[Premium] Deactivated in {guild.name} â€” role removed, nick reset.")
+            logging.info(f"[Premium] Deactivated in {guild.name} — role removed, nick reset.")
 
     except discord.Forbidden:
         logging.warning(f"[Premium] Missing permissions in {guild.name} ({guild.id})")
@@ -541,12 +541,12 @@ def is_premium_command(cmd_name: str) -> bool:
 
 async def apply_premium_labels():
     """
-    Update slash command descriptions to add/remove [ðŸ’Ž] label, then sync.
+    Update slash command descriptions to add/remove [💎] label, then sync.
 
     Strategy:
     - Modify local command tree descriptions
-    - Sync per-guild first â†’ instant effect in all current servers
-    - Then global sync â†’ covers future servers the bot joins
+    - Sync per-guild first → instant effect in all current servers
+    - Then global sync → covers future servers the bot joins
     Always reads from ORIGINAL_CMD_DESCRIPTIONS so labels never stack.
     """
     premium_cmds = set(cfg.get("premium_commands", []))
@@ -555,20 +555,20 @@ async def apply_premium_labels():
         base_name = cmd.name
         orig = ORIGINAL_CMD_DESCRIPTIONS.get(base_name)
         if orig is None:
-            orig = cmd.description.removeprefix("[ðŸ’Ž] ")
+            orig = cmd.description.removeprefix("[💎] ")
             ORIGINAL_CMD_DESCRIPTIONS[base_name] = orig
-        cmd.description = (f"[ðŸ’Ž] {orig}"[:100] if base_name in premium_cmds else orig)
+        cmd.description = (f"[💎] {orig}"[:100] if base_name in premium_cmds else orig)
 
         if hasattr(cmd, "commands"):
             for sub in cmd.commands:
                 sub_full = f"{base_name} {sub.name}"
                 sub_orig = ORIGINAL_CMD_DESCRIPTIONS.get(sub_full)
                 if sub_orig is None:
-                    sub_orig = sub.description.removeprefix("[ðŸ’Ž] ")
+                    sub_orig = sub.description.removeprefix("[💎] ")
                     ORIGINAL_CMD_DESCRIPTIONS[sub_full] = sub_orig
-                sub.description = (f"[ðŸ’Ž] {sub_orig}"[:100] if sub_full in premium_cmds else sub_orig)
+                sub.description = (f"[💎] {sub_orig}"[:100] if sub_full in premium_cmds else sub_orig)
 
-    # â”€â”€ Per-guild sync (instant, no propagation delay) â”€â”€
+    # ── Per-guild sync (instant, no propagation delay) ──
     guild_ok = guild_fail = 0
     for guild in bot.guilds:
         try:
@@ -580,34 +580,34 @@ async def apply_premium_labels():
         except Exception:
             guild_fail += 1
 
-    logging.info(f"[Premium Labels] Guild sync done â€” âœ… {guild_ok} / âŒ {guild_fail}. Locked: {premium_cmds}")
+    logging.info(f"[Premium Labels] Guild sync done — ✅ {guild_ok} / ❌ {guild_fail}. Locked: {premium_cmds}")
 
-    # â”€â”€ Global sync (covers new servers, may take ~1h to propagate) â”€â”€
+    # ── Global sync (covers new servers, may take ~1h to propagate) ──
     await asyncio.sleep(1)
     try:
         synced = await bot.tree.sync()
-        logging.info(f"[Premium Labels] Global sync â€” {len(synced)} commands.")
+        logging.info(f"[Premium Labels] Global sync — {len(synced)} commands.")
     except discord.HTTPException as e:
         logging.error(f"[Premium Labels] Global sync HTTP error: {e}")
     except Exception as e:
         logging.error(f"[Premium Labels] Global sync error: {e}")
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # ANTI CROSS-CHANNEL SPAM
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 #
 # Fingerprint = normalized text + attachment filenames + URLs in message.
-# We track: uid â†’ fingerprint â†’ {channel_ids, message_ids}
+# We track: uid → fingerprint → {channel_ids, message_ids}
 # When the same fingerprint appears in SPAM_THRESHOLD different channels
-# within SPAM_WINDOW seconds â†’ delete ALL tracked spam messages â†’ ban user.
+# within SPAM_WINDOW seconds → delete ALL tracked spam messages → ban user.
 #
 # Covers: plain text, invite links, image spam, file spam, mixed content.
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 SPAM_THRESHOLD = 3      # How many different channels trigger a ban
 SPAM_WINDOW    = 8.0    # Seconds within which the spread must happen
 
-# uid â†’ fingerprint â†’ {"channels": set, "messages": list of (channel_id, message_id), "first_seen": float}
+# uid → fingerprint → {"channels": set, "messages": list of (channel_id, message_id), "first_seen": float}
 spam_tracker:       dict[int, dict[str, dict]] = defaultdict(dict)
 spam_cleanup_times: dict[int, float]           = {}
 
@@ -623,17 +623,17 @@ def _spam_fingerprint(message: discord.Message) -> str:
     """
     parts: list[str] = []
 
-    # â”€â”€ Text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Text ──────────────────────────────────────────────────────────────
     text = message.content.strip().lower()
     if text:
         parts.append(text)
 
-    # â”€â”€ Attachments (image, file, video, etc.) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Attachments (image, file, video, etc.) ────────────────────────────
     for att in message.attachments:
         # Use filename so same image with different URLs still matches
         parts.append(f"att:{att.filename.lower()}")
 
-    # â”€â”€ URLs extracted from text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── URLs extracted from text ──────────────────────────────────────────
     url_pattern = re.compile(
         r"(https?://[^\s]+|discord\.gg/[^\s]+|discord\.com/invite/[^\s]+)",
         re.IGNORECASE
@@ -643,24 +643,24 @@ def _spam_fingerprint(message: discord.Message) -> str:
         normalized = url.lower().split("?")[0].rstrip("/")
         parts.append(f"url:{normalized}")
 
-    # â”€â”€ Embeds (links auto-embedded by Discord) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Embeds (links auto-embedded by Discord) ───────────────────────────
     for embed in message.embeds:
         if embed.url:
             parts.append(f"url:{embed.url.lower().split('?')[0].rstrip('/')}")
 
     return "|".join(sorted(set(parts))) or "empty"
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-#  FIX #2 â€” SLASH COMMANDS VIA PREFIX TOO
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  FIX #2 — SLASH COMMANDS VIA PREFIX TOO
 #  We intercept non-owner prefix messages and
 #  route them to the slash command tree.
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 OWNER_ONLY_CMDS = {"maintenance", "premium", "setchannel"}
 
-# â”€â”€ Global prefix premium gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Global prefix premium gate ─────────────────────────────────────────────
 @bot.check
 async def global_prefix_premium_check(ctx: commands.Context) -> bool:
     """Block non-premium users from premium-locked prefix commands."""
@@ -671,42 +671,42 @@ async def global_prefix_premium_check(ctx: commands.Context) -> bool:
         return True
     if user_has_premium(ctx.guild, ctx.author):
         return True
-    return False  # â†’ triggers CheckFailure â†’ on_command_error
+    return False  # → triggers CheckFailure → on_command_error
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # EVENTS
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 @bot.event
 async def on_ready():
     print(f"[JoyCannot] Ready as {bot.user} (ID: {bot.user.id})")
 
-    # â”€â”€ Snapshot CLEAN original descriptions (strip any leftover [ðŸ’Ž] prefix) â”€â”€
+    # ── Snapshot CLEAN original descriptions (strip any leftover [💎] prefix) ──
     for cmd in bot.tree.get_commands():
-        raw = cmd.description.removeprefix("[ðŸ’Ž] ")
+        raw = cmd.description.removeprefix("[💎] ")
         ORIGINAL_CMD_DESCRIPTIONS[cmd.name] = raw
         if hasattr(cmd, "commands"):
             for sub in cmd.commands:
-                sub_raw = sub.description.removeprefix("[ðŸ’Ž] ")
+                sub_raw = sub.description.removeprefix("[💎] ")
                 ORIGINAL_CMD_DESCRIPTIONS[f"{cmd.name} {sub.name}"] = sub_raw
 
-    # â”€â”€ Initial global sync â”€â”€
+    # ── Initial global sync ──
     try:
         synced = await bot.tree.sync()
         print(f"[JoyCannot] Global sync: {len(synced)} command(s).")
     except Exception as e:
         print(f"[JoyCannot] Global sync error: {e}")
 
-    # â”€â”€ Re-apply saved premium labels immediately (per-guild for instant effect) â”€â”€
+    # ── Re-apply saved premium labels immediately (per-guild for instant effect) ──
     if cfg.get("premium_commands"):
         print("[JoyCannot] Applying premium labels...")
         await apply_premium_labels()
 
     cleanup_spam_cache.start()
     rotate_status.start()
-    print(f"[JoyCannot] Ready â€” {len(bot.guilds)} guild(s).")
+    print(f"[JoyCannot] Ready — {len(bot.guilds)} guild(s).")
 
-    # â”€â”€ Restore premium nicknames for all activated guilds â”€â”€
+    # ── Restore premium nicknames for all activated guilds ──
     premium_guilds = set(cfg.get("premium_guilds", []))
     if premium_guilds:
         print(f"[JoyCannot] Restoring premium nicknames for {len(premium_guilds)} guild(s)...")
@@ -715,12 +715,12 @@ async def on_ready():
                 await set_guild_premium_nick(guild, activate=True)
                 await asyncio.sleep(0.5)
 
-    # â”€â”€ Restore correct avatar based on premium state â”€â”€
+    # ── Restore correct avatar based on premium state ──
     has_premium = len(cfg.get("premium_guilds", [])) > 0
     avatar_url  = cfg.get("avatar_premium" if has_premium else "avatar_default", "")
     if avatar_url:
         ok = await set_bot_avatar(avatar_url)
-        print(f"[JoyCannot] Avatar {'restored âœ…' if ok else 'restore failed âŒ'} ({'premium' if has_premium else 'default'})")
+        print(f"[JoyCannot] Avatar {'restored ✅' if ok else 'restore failed ❌'} ({'premium' if has_premium else 'default'})")
 
 
 @bot.event
@@ -738,16 +738,16 @@ async def on_guild_join(guild: discord.Guild):
         return
 
     embed = base_embed(
-        "ðŸ‘‹ Thanks for inviting JoyCannot!",
+        "👋 Thanks for inviting JoyCannot!",
         "Hello! I'm **JoyCannot**, a professional multi-purpose Discord bot.\n\n"
         "**Features:**\n"
-        "ðŸ›¡ï¸ Full Moderation Suite\n"
-        "ðŸŽ« Advanced Ticket System\n"
-        "ðŸ“… Live Countdown Event System\n"
-        "ðŸ“¢ Maintenance Broadcasts\n"
-        "ðŸŒ Multi-language Support (8 languages)\n"
-        "ðŸ’Ž Premium Package System\n"
-        "ðŸš« Anti Cross-Channel Spam\n\n"
+        "🛡️ Full Moderation Suite\n"
+        "🎫 Advanced Ticket System\n"
+        "📅 Live Countdown Event System\n"
+        "📢 Maintenance Broadcasts\n"
+        "🌐 Multi-language Support (8 languages)\n"
+        "💎 Premium Package System\n"
+        "🚫 Anti Cross-Channel Spam\n\n"
         "Use `/help` or `!Joy help` to get started!\n\n"
         "**Setup:** Select the main channel below for maintenance notifications."
     )
@@ -760,7 +760,7 @@ async def on_guild_join(guild: discord.Guild):
         @discord.ui.select(
             cls=discord.ui.ChannelSelect,
             channel_types=[discord.ChannelType.text],
-            placeholder="ðŸ“Œ Select main notification channel",
+            placeholder="📌 Select main notification channel",
             min_values=1, max_values=1,
         )
         async def select_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
@@ -783,7 +783,7 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # â”€â”€ Anti cross-channel spam â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Anti cross-channel spam ───────────────────────────────────────────
     if message.guild:
         uid = message.author.id
         now = discord.utils.utcnow().timestamp()
@@ -814,9 +814,9 @@ async def on_message(message: discord.Message):
                 entry["messages"].append((message.channel.id, message.id))
                 spam_cleanup_times[uid] = now
 
-                # â”€â”€ PREEMPTIVE DELETE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── PREEMPTIVE DELETE ─────────────────────────────────────
                 # If this fingerprint already appeared in at least 1 other
-                # channel, delete the new message immediately â€” don't wait
+                # channel, delete the new message immediately — don't wait
                 # for the full threshold. Spammers send all at once so by
                 # the time we hit threshold the damage is already done.
                 channel_count = len(entry["channels"])
@@ -824,7 +824,7 @@ async def on_message(message: discord.Message):
                     await _try_delete(message.channel, message.id)
 
                 if channel_count >= SPAM_THRESHOLD:
-                    # â”€â”€ Delete all remaining tracked spam messages â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ── Delete all remaining tracked spam messages ────────
                     delete_tasks = []
                     for ch_id, msg_id in entry["messages"]:
                         ch = message.guild.get_channel(ch_id)
@@ -832,7 +832,7 @@ async def on_message(message: discord.Message):
                             delete_tasks.append(_try_delete(ch, msg_id))
                     await asyncio.gather(*delete_tasks)
 
-                    # â”€â”€ Ban the spammer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ── Ban the spammer ───────────────────────────────────
                     banned = False
                     try:
                         await message.guild.ban(
@@ -844,21 +844,21 @@ async def on_message(message: discord.Message):
                     except discord.Forbidden:
                         pass
 
-                    # â”€â”€ Professional log embed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ── Professional log embed ────────────────────────────
                     gc     = guild_cfg(cfg, message.guild.id)
                     log_id = gc["ticket"].get("log_channel")
                     if log_id:
                         log_ch = message.guild.get_channel(log_id)
                         if log_ch:
                             content_type = (
-                                "ðŸ–¼ï¸ Image/File" if message.attachments
-                                else "ðŸ”— Link/Invite" if any(
+                                "🖼️ Image/File" if message.attachments
+                                else "🔗 Link/Invite" if any(
                                     x in (message.content or "") for x in
                                     ["http", "discord.gg", "discord.com/invite"])
-                                else "ðŸ’¬ Text"
+                                else "💬 Text"
                             )
                             log_embed = discord.Embed(
-                                title="ðŸš¨ Anti-Spam â€” User Actioned",
+                                title="🚨 Anti-Spam — User Actioned",
                                 color=0xEF4444,
                                 timestamp=discord.utils.utcnow()
                             )
@@ -867,17 +867,17 @@ async def on_message(message: discord.Message):
                                 icon_url=message.author.display_avatar.url
                             )
                             log_embed.add_field(
-                                name="ðŸ‘¤ User",
+                                name="👤 User",
                                 value=f"{message.author.mention}\n`{message.author.id}`",
                                 inline=True
                             )
                             log_embed.add_field(
-                                name="âš¡ Action",
-                                value="ðŸ”¨ **Banned**" if banned else "âš ï¸ Kicked (no perm)",
+                                name="⚡ Action",
+                                value="🔨 **Banned**" if banned else "⚠️ Kicked (no perm)",
                                 inline=True
                             )
                             log_embed.add_field(
-                                name="ðŸ“Š Spam Stats",
+                                name="📊 Spam Stats",
                                 value=(
                                     f"**Channels hit:** {len(entry['channels'])}\n"
                                     f"**Messages deleted:** {len(entry['messages'])}\n"
@@ -890,13 +890,13 @@ async def on_message(message: discord.Message):
                             snippet = (message.content or "")[:100]
                             if snippet:
                                 log_embed.add_field(
-                                    name="ðŸ“ Content Preview",
+                                    name="📝 Content Preview",
                                     value=f"```{snippet}```",
                                     inline=False
                                 )
                             elif message.attachments:
                                 log_embed.add_field(
-                                    name="ðŸ“Ž Attachment",
+                                    name="📎 Attachment",
                                     value=message.attachments[0].filename,
                                     inline=False
                                 )
@@ -909,7 +909,7 @@ async def on_message(message: discord.Message):
                     spam_tracker.pop(uid, None)
                     return
             else:
-                # Window expired for this fingerprint â€” reset it
+                # Window expired for this fingerprint — reset it
                 spam_tracker[uid][fp] = {
                     "channels":   {message.channel.id},
                     "messages":   [(message.channel.id, message.id)],
@@ -917,10 +917,10 @@ async def on_message(message: discord.Message):
                 }
                 spam_cleanup_times[uid] = now
 
-    # â”€â”€ Prefix command routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Prefix command routing ────────────────────────────────────────────
     await bot.process_commands(message)
 
-    # â”€â”€ XP + Quest gain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── XP + Quest gain ──────────────────────────────────────────────────
     # Quest message tracking runs on EVERY message (no cooldown).
     # XP gain respects cooldown separately.
     if message.guild and not message.author.bot:
@@ -946,11 +946,11 @@ async def _try_delete(channel: discord.TextChannel, message_id: int):
         pass
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  LEVELING SYSTEM
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 import random
 import math
@@ -980,7 +980,7 @@ def make_xp_bar(current: int, needed: int, length: int = 16) -> str:
     """Generate a rich visual XP progress bar with percentage."""
     pct    = current / max(needed, 1)
     filled = int(pct * length)
-    bar    = "â–°" * filled + "â–±" * (length - filled)
+    bar    = "▰" * filled + "▱" * (length - filled)
     return f"`{bar}` **{int(pct*100)}%**"
 
 def get_member_xp(gc: dict, uid: str) -> dict:
@@ -1040,29 +1040,29 @@ async def send_levelup_notification(message: discord.Message, new_level: int):
 
     lvl, cx, nx = xp_progress(data["xp"])
     pct  = int((cx / max(nx, 1)) * 100)
-    bar  = "â–°" * int(pct / 100 * 16) + "â–±" * (16 - int(pct / 100 * 16))
+    bar  = "▰" * int(pct / 100 * 16) + "▱" * (16 - int(pct / 100 * 16))
 
-    # â”€â”€ Level-up card embed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Level-up card embed ────────────────────────────────────────────────
     embed = discord.Embed(
         description=(
             f"**@{message.author.display_name}**\n"
-            f"â €\n"
-            f"**Level: {new_level}** â €Â·â € "
-            f"**XP: {cx:,} / {nx:,}** â €Â·â € "
+            f"⠀\n"
+            f"**Level: {new_level}** ⠀·⠀ "
+            f"**XP: {cx:,} / {nx:,}** ⠀·⠀ "
             f"**Rank: #{rank}**\n"
-            f"â €\n"
+            f"⠀\n"
             f"`{bar}` {pct}%"
         ),
         color=0x1DB954,
         timestamp=discord.utils.utcnow()
     )
     embed.set_author(
-        name=f"â¬†ï¸ Level Up!",
+        name=f"⬆️ Level Up!",
         icon_url=message.author.display_avatar.url
     )
     embed.set_thumbnail(url=message.author.display_avatar.url)
 
-    # â”€â”€ Vote boost hint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Vote boost hint ────────────────────────────────────────────────────
     bot_id   = bot.user.id if bot.user else ""
     vote_url = f"https://top.gg/bot/{bot_id}/vote"
     embed.set_footer(
@@ -1070,10 +1070,10 @@ async def send_levelup_notification(message: discord.Message, new_level: int):
         icon_url="https://top.gg/favicon.ico"
     )
 
-    # â”€â”€ Buttons (vote link) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Buttons (vote link) ───────────────────────────────────────────────
     view = discord.ui.View()
     view.add_item(discord.ui.Button(
-        label="ðŸ—³ï¸ Vote for XP boost",
+        label="🗳️ Vote for XP boost",
         url=vote_url,
         style=discord.ButtonStyle.link
     ))
@@ -1098,14 +1098,14 @@ async def send_levelup_notification(message: discord.Message, new_level: int):
                 pass
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  QUEST SYSTEM
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════
 # Quests are per-guild. Each quest has:
 #   id, name, description, type, target (int), reward_xp, reward_text, active
 # Types: send_messages | reactions_given | days_active
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 QUEST_TYPES = {
     "send_messages":  "Send {target} messages",
@@ -1149,21 +1149,21 @@ async def update_quest_progress(gc: dict, uid: str, quest_type: str, increment: 
 async def _complete_quest(gc: dict, uid: str, quest: dict):
     """
     Handle quest completion:
-    - XP reward  â†’ silently added, no notification
-    - Text reward â†’ "Claim Reward" button in quest_channel â†’ ephemeral embed (only user sees)
-    - Public completion notif â†’ posted in quest_channel (no reward spoiler)
+    - XP reward  → silently added, no notification
+    - Text reward → "Claim Reward" button in quest_channel → ephemeral embed (only user sees)
+    - Public completion notif → posted in quest_channel (no reward spoiler)
     """
     reward_xp   = quest.get("reward_xp", 0)
     reward_text = quest.get("reward_text", "")
 
-    # â”€â”€ XP reward: silent add, no notification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── XP reward: silent add, no notification ───────────────────────────
     if reward_xp > 0:
         data          = get_member_xp(gc, uid)
         data["xp"]   += reward_xp
         data["level"] = level_from_xp(data["xp"])
         save_config(cfg)
 
-    # â”€â”€ Find guild + quest channel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Find guild + quest channel ────────────────────────────────────────
     target_guild = None
     quest_ch     = None
     for guild in bot.guilds:
@@ -1175,29 +1175,29 @@ async def _complete_quest(gc: dict, uid: str, quest: dict):
             break
 
     if not target_guild or not quest_ch:
-        return  # No quest channel set â€” skip all notifications
+        return  # No quest channel set — skip all notifications
 
     member = target_guild.get_member(int(uid))
     if not member:
         return
 
-    # â”€â”€ Public completion embed (reward details hidden) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Public completion embed (reward details hidden) ───────────────────
     public_embed = discord.Embed(
-        title="ðŸ† Quest Completed!",
-        description=f"{member.mention} telah menyelesaikan quest **{quest['name']}**! ðŸŽ‰",
+        title="🏆 Quest Completed!",
+        description=f"{member.mention} telah menyelesaikan quest **{quest['name']}**! 🎉",
         color=0x22C55E,
         timestamp=discord.utils.utcnow()
     )
-    public_embed.add_field(name="ðŸ“‹ Quest", value=quest.get("description", ""), inline=False)
+    public_embed.add_field(name="📋 Quest", value=quest.get("description", ""), inline=False)
     if reward_xp:
-        public_embed.add_field(name="â­ XP", value=f"+{reward_xp} XP (added)", inline=True)
+        public_embed.add_field(name="⭐ XP", value=f"+{reward_xp} XP (added)", inline=True)
     if reward_text:
-        public_embed.add_field(name="ðŸŽ Reward", value="*Klik tombol di bawah untuk klaim*", inline=True)
+        public_embed.add_field(name="🎁 Reward", value="*Klik tombol di bawah untuk klaim*", inline=True)
     public_embed.set_thumbnail(url=member.display_avatar.url)
     public_embed.set_footer(text="JoyCannot Quest System")
 
     if reward_text:
-        # â”€â”€ Claim button â€” reward shown ephemerally only to the completer â”€
+        # ── Claim button — reward shown ephemerally only to the completer ─
         class ClaimRewardView(discord.ui.View):
             def __init__(self, claimer_id: int, reward: str, quest_name: str):
                 super().__init__(timeout=None)
@@ -1205,30 +1205,30 @@ async def _complete_quest(gc: dict, uid: str, quest: dict):
                 self.reward     = reward
                 self.quest_name = quest_name
 
-            @discord.ui.button(label="ðŸŽ Claim Reward", style=discord.ButtonStyle.success)
+            @discord.ui.button(label="🎁 Claim Reward", style=discord.ButtonStyle.success)
             async def claim(self, interaction: discord.Interaction, btn: discord.ui.Button):
                 if interaction.user.id != self.claimer_id:
                     return await interaction.response.send_message(
                         embed=base_embed(
-                            "âŒ Bukan hakmu",
+                            "❌ Bukan hakmu",
                             "Hadiah ini hanya bisa diklaim oleh yang menyelesaikan quest.",
                             color=0xEF4444),
                         ephemeral=True)
                 reward_embed = discord.Embed(
-                    title="ðŸŽ Hadiahmu",
+                    title="🎁 Hadiahmu",
                     description=(
                         f"Selamat! Kamu telah menyelesaikan **{self.quest_name}**!\n\n"
-                        f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"```{self.reward}```\n"
-                        f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"*Simpan hadiahmu baik-baik!*"
                     ),
                     color=0x22C55E,
                     timestamp=discord.utils.utcnow()
                 )
-                reward_embed.set_footer(text="JoyCannot Quest System â€¢ Only you can see this")
+                reward_embed.set_footer(text="JoyCannot Quest System • Only you can see this")
                 btn.disabled = True
-                btn.label    = "âœ… Claimed"
+                btn.label    = "✅ Claimed"
                 # Send ephemeral reward first, then delete the public message
                 await interaction.response.send_message(embed=reward_embed, ephemeral=True)
                 try:
@@ -1248,9 +1248,9 @@ async def _complete_quest(gc: dict, uid: str, quest: dict):
             pass
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # BACKGROUND TASKS
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 @bot.event
 async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
@@ -1282,15 +1282,15 @@ async def rotate_status():
         discord.Activity(type=discord.ActivityType.watching,
                          name=f"{guild_count} servers"),
         discord.Activity(type=discord.ActivityType.listening,
-                         name="/help â€¢ !Joy help"),
+                         name="/help • !Joy help"),
         discord.Activity(type=discord.ActivityType.playing,
-                         name="JoyCannot v1.3 ðŸš€"),
+                         name="JoyCannot v1.3 🚀"),
         discord.Activity(type=discord.ActivityType.watching,
                          name=f"{premium_count} premium server{'s' if premium_count != 1 else ''}"),
         discord.Activity(type=discord.ActivityType.listening,
-                         name="/vote â†’ get discount ðŸ—³ï¸"),
+                         name="/vote → get discount 🗳️"),
         discord.Activity(type=discord.ActivityType.watching,
-                         name="for cross-channel spam ðŸ›¡ï¸"),
+                         name="for cross-channel spam 🛡️"),
     ]
     activity = statuses[_status_index % len(statuses)]
     _status_index += 1
@@ -1299,13 +1299,13 @@ async def rotate_status():
     except Exception:
         pass
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  SHARED COMMAND LOGIC
 #  Each feature has a core async function.
 #  Both slash AND prefix commands call these.
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 async def do_kick(guild, author, member, reason, reply_fn):
     if not author.guild_permissions.kick_members:
@@ -1348,7 +1348,7 @@ async def do_warn(guild, author, member, reason, reply_fn):
     save_config(cfg)
     await reply_fn(embed=success_embed(t(cfg, guild.id, "warn_success", user=member.mention, reason=reason)))
     try:
-        await member.send(embed=base_embed("âš ï¸ You have been warned",
+        await member.send(embed=base_embed("⚠️ You have been warned",
             f"**Server:** {guild.name}\n**Reason:** {reason}"))
     except Exception:
         pass
@@ -1384,7 +1384,7 @@ async def do_userinfo(guild, member, reply_fn):
     gc    = guild_cfg(cfg, guild.id)
     warns = len(gc["warnings"].get(str(member.id), []))
     roles = [r.mention for r in member.roles if r.name != "@everyone"]
-    embed = base_embed(f"ðŸ‘¤ User Info â€” {member.display_name}")
+    embed = base_embed(f"👤 User Info — {member.display_name}")
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="Username",   value=str(member),                                   inline=True)
     embed.add_field(name="ID",         value=str(member.id),                                inline=True)
@@ -1396,66 +1396,66 @@ async def do_userinfo(guild, member, reply_fn):
     await reply_fn(embed=embed)
 
 async def do_avatar(member, reply_fn):
-    embed = base_embed(f"ðŸ–¼ï¸ Avatar â€” {member.display_name}")
+    embed = base_embed(f"🖼️ Avatar — {member.display_name}")
     embed.set_image(url=member.display_avatar.url)
     await reply_fn(embed=embed)
 
 async def do_ping(reply_fn):
-    await reply_fn(embed=info_embed("ðŸ“ Pong!", f"Websocket latency: **{round(bot.latency*1000)}ms**"))
+    await reply_fn(embed=info_embed("🏓 Pong!", f"Websocket latency: **{round(bot.latency*1000)}ms**"))
 
 async def do_help(reply_fn):
     pc = set(cfg.get("premium_commands", []))
     def lbl(name: str) -> str:
-        return f"`{name}` ðŸ’Ž" if name in pc else f"`{name}`"
+        return f"`{name}` 💎" if name in pc else f"`{name}`"
 
-    embed = base_embed("ðŸ“– JoyCannot â€” Command List",
+    embed = base_embed("📖 JoyCannot — Command List",
         "All commands work as `/slash` **and** `!Joy prefix`.\n"
-        "ðŸ’Ž = Premium required")
-    embed.add_field(name="ðŸ›¡ï¸ Moderation", value=(
+        "💎 = Premium required")
+    embed.add_field(name="🛡️ Moderation", value=(
         f"{lbl('kick')} {lbl('ban')} {lbl('timeout')} {lbl('warn')}\n"
         f"{lbl('addrole')} {lbl('removerole')} {lbl('move')}\n"
         f"{lbl('userinfo')} {lbl('avatar')} {lbl('addemoji')} {lbl('ping')}"
     ), inline=False)
-    embed.add_field(name="ðŸŽ« Tickets", value=(
-        f"{lbl('ticket setup')} Â· {lbl('ticket panel')} Â· {lbl('ticket close')}"
+    embed.add_field(name="🎫 Tickets", value=(
+        f"{lbl('ticket setup')} · {lbl('ticket panel')} · {lbl('ticket close')}"
     ), inline=False)
-    embed.add_field(name="ðŸ“… Events", value=(
-        f"{lbl('event create')} Â· {lbl('event channel')}"
+    embed.add_field(name="📅 Events", value=(
+        f"{lbl('event create')} · {lbl('event channel')}"
     ), inline=False)
-    embed.add_field(name="ðŸŒ Language", value=(
-        f"{lbl('language set')} Â· {lbl('language list')}"
+    embed.add_field(name="🌐 Language", value=(
+        f"{lbl('language set')} · {lbl('language list')}"
     ), inline=False)
-    embed.add_field(name="ðŸ’Ž Premium", value=(
-        f"{lbl('premium info')} Â· {lbl('premium order')}"
+    embed.add_field(name="💎 Premium", value=(
+        f"{lbl('premium info')} · {lbl('premium order')}"
     ), inline=False)
-    embed.add_field(name="â­ Leveling", value=(
-        f"{lbl('rank')} Â· {lbl('leaderboard')}\n"
-        f"{lbl('level rank')} Â· {lbl('level leaderboard')} Â· {lbl('level setchannel')}\n"
-        f"{lbl('xp add')} Â· {lbl('xp remove')} Â· {lbl('xp set')} Â· {lbl('xp setlevel')}"
+    embed.add_field(name="⭐ Leveling", value=(
+        f"{lbl('rank')} · {lbl('leaderboard')}\n"
+        f"{lbl('level rank')} · {lbl('level leaderboard')} · {lbl('level setchannel')}\n"
+        f"{lbl('xp add')} · {lbl('xp remove')} · {lbl('xp set')} · {lbl('xp setlevel')}"
     ), inline=False)
-    embed.add_field(name="ðŸ“‹ Quests", value=(
-        f"{lbl('quest list')} Â· {lbl('quest create')} Â· {lbl('quest delete')} Â· {lbl('quest toggle')}"
+    embed.add_field(name="📋 Quests", value=(
+        f"{lbl('quest list')} · {lbl('quest create')} · {lbl('quest delete')} · {lbl('quest toggle')}"
     ), inline=False)
-    embed.add_field(name="ðŸŽŠ Giveaway", value=(
-        f"{lbl('giveaway start')} Â· {lbl('giveaway end')} Â· {lbl('giveaway reroll')} Â· {lbl('giveaway list')}"
+    embed.add_field(name="🎊 Giveaway", value=(
+        f"{lbl('giveaway start')} · {lbl('giveaway end')} · {lbl('giveaway reroll')} · {lbl('giveaway list')}"
     ), inline=False)
-    embed.add_field(name="ðŸ‘‘ Owner Only (prefix)", value=(
-        "`!Joy maintenance` Â· `!Joy premium` Â· `!Joy setchannel`"
+    embed.add_field(name="👑 Owner Only (prefix)", value=(
+        "`!Joy maintenance` · `!Joy premium` · `!Joy setchannel`"
     ), inline=False)
     await reply_fn(embed=embed)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  AUTOCOMPLETE CALLBACKS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 async def autocomplete_lang(
     interaction: discord.Interaction, current: str
 ) -> list[app_commands.Choice[str]]:
     """Autocomplete for language codes."""
     return [
-        app_commands.Choice(name=f"{code} â€” {name}", value=code)
+        app_commands.Choice(name=f"{code} — {name}", value=code)
         for code, name in LANGUAGES.items()
         if current.lower() in code.lower() or current.lower() in name.lower()
     ][:25]
@@ -1467,7 +1467,7 @@ async def autocomplete_package(
     packages = cfg.get("premium_packages", [])
     return [
         app_commands.Choice(
-            name=f"{p['name']} â€” {p.get('duration','?')} â€” {p.get('price','?')}",
+            name=f"{p['name']} — {p.get('duration','?')} — {p.get('price','?')}",
             value=p["name"]
         )
         for p in packages
@@ -1544,14 +1544,14 @@ async def do_addemoji(guild: discord.Guild, emoji_or_url: str, name: str = "") -
     """
     Add an emoji to a guild. Supports three modes:
       1. Custom Discord emoji  <:name:id> or <a:name:id>
-      2. Unicode/native emoji  ðŸ˜ ðŸ”¥ etc  (fetched from Twemoji CDN)
+      2. Unicode/native emoji  😁 🔥 etc  (fetched from Twemoji CDN)
       3. Direct image URL      https://...
     """
     import aiohttp, unicodedata
 
     src = emoji_or_url.strip()
 
-    # â”€â”€ Mode 1: Custom Discord emoji <:name:id> or <a:name:id> â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Mode 1: Custom Discord emoji <:name:id> or <a:name:id> ────────────
     emoji_re = re.fullmatch(r"<(a?):([a-zA-Z0-9_]+):(\d+)>", src)
     if emoji_re:
         animated   = emoji_re.group(1) == "a"
@@ -1572,7 +1572,7 @@ async def do_addemoji(guild: discord.Guild, emoji_or_url: str, name: str = "") -
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # â”€â”€ Mode 2: Unicode/native emoji ðŸ˜ ðŸ”¥ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Mode 2: Unicode/native emoji 😁 🔥 ──────────────────────────────
     def _is_unicode_emoji(s: str) -> bool:
         if s.startswith("http") or s.startswith("<"):
             return False
@@ -1611,17 +1611,17 @@ async def do_addemoji(guild: discord.Guild, emoji_or_url: str, name: str = "") -
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # â”€â”€ Mode 3: Direct image URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Mode 3: Direct image URL ──────────────────────────────────────────
     url = src
     if not name.strip():
         return {"success": False,
                 "error": "Please provide a **name** when using a URL.\n"
                          "Usage: `!Joy addemoji <url> <name>`\n"
-                         "Or: `!Joy addemoji ðŸ˜ name` / `!Joy addemoji <:emoji:id>`"}
+                         "Or: `!Joy addemoji 😁 name` / `!Joy addemoji <:emoji:id>`"}
     if not url.startswith("http"):
         return {"success": False,
-                "error": "Invalid input. Use:\nâ€¢ `<:name:id>` â€” custom Discord emoji\n"
-                         "â€¢ `ðŸ˜ name` â€” native emoji\nâ€¢ `https://...` â€” image URL"}
+                "error": "Invalid input. Use:\n• `<:name:id>` — custom Discord emoji\n"
+                         "• `😁 name` — native emoji\n• `https://...` — image URL"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
@@ -1635,13 +1635,13 @@ async def do_addemoji(guild: discord.Guild, emoji_or_url: str, name: str = "") -
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  SLASH COMMANDS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
-# â”€â”€ MODERATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── MODERATION ────────────────────────────────
 
 @bot.tree.command(name="kick", description="Kick a member from the server. Requires Kick Members permission.")
 @app_commands.describe(
@@ -1725,7 +1725,7 @@ async def slash_ping(i: discord.Interaction):
 async def slash_help(i: discord.Interaction):
     await do_help(i.response.send_message)
 
-@bot.tree.command(name="addemoji", description="Add an emoji to this server â€” paste an emoji directly OR provide a name + image URL.")
+@bot.tree.command(name="addemoji", description="Add an emoji to this server — paste an emoji directly OR provide a name + image URL.")
 @app_commands.describe(
     emoji_or_url="Paste an emoji from another server (e.g. <:name:id>) OR a direct image URL",
     name="Custom name for the emoji (required only when using a URL, not needed for pasted emoji)"
@@ -1742,13 +1742,13 @@ async def slash_addemoji(i: discord.Interaction, emoji_or_url: str, name: str = 
     else:
         await i.followup.send(embed=error_embed(result["error"]), ephemeral=True)
 
-# â”€â”€ LANGUAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── LANGUAGE ──────────────────────────────────
 
 lang_group = app_commands.Group(name="language", description="Change or view the bot's language for this server.")
 
 @lang_group.command(name="set", description="Set the bot's response language for this server. Requires Manage Server.")
 @app_commands.describe(
-    lang="Language code â€” start typing to search (e.g. 'id' for Indonesian, 'en' for English)"
+    lang="Language code — start typing to search (e.g. 'id' for Indonesian, 'en' for English)"
 )
 @app_commands.autocomplete(lang=autocomplete_lang)
 async def slash_lang_set(i: discord.Interaction, lang: str):
@@ -1764,12 +1764,12 @@ async def slash_lang_set(i: discord.Interaction, lang: str):
 @lang_group.command(name="list", description="Show all 8 supported languages and highlight the currently active one.")
 async def slash_lang_list(i: discord.Interaction):
     cur   = guild_cfg(cfg, i.guild.id).get("language", "en")
-    lines = "\n".join(f"{'âœ…' if k==cur else 'â—½'} `{k}` â€” {v}" for k, v in LANGUAGES.items())
-    await i.response.send_message(embed=info_embed("ðŸŒ Supported Languages", lines))
+    lines = "\n".join(f"{'✅' if k==cur else '◽'} `{k}` — {v}" for k, v in LANGUAGES.items())
+    await i.response.send_message(embed=info_embed("🌐 Supported Languages", lines))
 
 bot.tree.add_command(lang_group)
 
-# â”€â”€ TICKET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── TICKET ────────────────────────────────────
 
 ticket_group = app_commands.Group(name="ticket", description="Manage the server's ticket support system.")
 
@@ -1777,7 +1777,7 @@ ticket_group = app_commands.Group(name="ticket", description="Manage the server'
 @app_commands.describe(
     category="The category where new ticket channels will be created",
     log_channel="Channel where ticket open/close events are logged",
-    support_role="Role for admins/ticket support staff â€” they get auto-access to every ticket",
+    support_role="Role for admins/ticket support staff — they get auto-access to every ticket",
     max_tickets="Max open tickets per user at a time (default: 1, max: 5)"
 )
 async def slash_ticket_setup(
@@ -1798,12 +1798,12 @@ async def slash_ticket_setup(
     gc["ticket"]["max_tickets"]  = max_tickets
     save_config(cfg)
 
-    embed = base_embed("âœ… Ticket System Configured",
+    embed = base_embed("✅ Ticket System Configured",
         "Ticket system has been set up successfully!")
-    embed.add_field(name="ðŸ“ Category",     value=category.name,                                            inline=True)
-    embed.add_field(name="ðŸ“‹ Log Channel",  value=log_channel.mention,                                      inline=True)
-    embed.add_field(name="ðŸŽ­ Support Role", value=support_role.mention if support_role else "Anyone with Manage Channels", inline=True)
-    embed.add_field(name="ðŸŽ« Max Tickets",  value=f"{max_tickets} per user",                                inline=True)
+    embed.add_field(name="📁 Category",     value=category.name,                                            inline=True)
+    embed.add_field(name="📋 Log Channel",  value=log_channel.mention,                                      inline=True)
+    embed.add_field(name="🎭 Support Role", value=support_role.mention if support_role else "Anyone with Manage Channels", inline=True)
+    embed.add_field(name="🎫 Max Tickets",  value=f"{max_tickets} per user",                                inline=True)
     await i.response.send_message(embed=embed)
 
 @ticket_group.command(name="panel", description="Send a ticket panel embed with an 'Open Ticket' button to this channel.")
@@ -1814,7 +1814,7 @@ async def slash_ticket_setup(
 )
 async def slash_ticket_panel(
     i: discord.Interaction,
-    title: str = "ðŸŽ« Support Tickets",
+    title: str = "🎫 Support Tickets",
     description: str = "Click the button below to open a support ticket.",
     button_label: str = "Open Ticket"
 ):
@@ -1828,7 +1828,7 @@ async def slash_ticket_panel(
         def __init__(self):
             super().__init__(timeout=None)
         @discord.ui.button(label=button_label, style=discord.ButtonStyle.primary,
-                           emoji="ðŸŽ«", custom_id="joy_ticket_open")
+                           emoji="🎫", custom_id="joy_ticket_open")
         async def open_ticket(self, interaction: discord.Interaction, _btn):
             await handle_open_ticket(interaction)
 
@@ -1850,8 +1850,8 @@ async def slash_ticket_close(i: discord.Interaction):
 bot.tree.add_command(ticket_group)
 
 
-class TicketCloseModal(discord.ui.Modal, title="ðŸ”’ Close Ticket"):
-    """Shown when closing a ticket â€” requires a reason."""
+class TicketCloseModal(discord.ui.Modal, title="🔒 Close Ticket"):
+    """Shown when closing a ticket — requires a reason."""
     reason = discord.ui.TextInput(
         label="Reason for closing",
         placeholder="e.g. Issue resolved, No response from user, Duplicate ticket...",
@@ -1869,7 +1869,7 @@ class TicketCloseModal(discord.ui.Modal, title="ðŸ”’ Close Ticket"):
         gc = guild_cfg(cfg, i.guild.id)
 
         close_embed = base_embed(
-            "ðŸ”’ Ticket Closing",
+            "🔒 Ticket Closing",
             f"This ticket is being closed by {i.user.mention}.\n"
             f"**Reason:** {reason_text}\n\n"
             "Channel will be deleted in **5 seconds**.",
@@ -1877,25 +1877,25 @@ class TicketCloseModal(discord.ui.Modal, title="ðŸ”’ Close Ticket"):
         )
         await i.response.send_message(embed=close_embed)
 
-        # â”€â”€ Log to log channel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Log to log channel ────────────────────────────────────────────
         log_id = gc["ticket"].get("log_channel")
         if log_id:
             log_ch = i.guild.get_channel(log_id)
             if log_ch:
                 log_embed = base_embed(
-                    "ðŸ“‹ Ticket Closed",
+                    "📋 Ticket Closed",
                     None,
                     color=0xEF4444
                 )
-                log_embed.add_field(name="ðŸŽ« Channel",   value=i.channel.name,           inline=True)
-                log_embed.add_field(name="ðŸ”’ Closed by", value=i.user.mention,            inline=True)
-                log_embed.add_field(name="ðŸ“ Reason",    value=reason_text,               inline=False)
-                log_embed.add_field(name="ðŸ• Time",
+                log_embed.add_field(name="🎫 Channel",   value=i.channel.name,           inline=True)
+                log_embed.add_field(name="🔒 Closed by", value=i.user.mention,            inline=True)
+                log_embed.add_field(name="📝 Reason",    value=reason_text,               inline=False)
+                log_embed.add_field(name="🕐 Time",
                     value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=False)
                 # Find opener
                 opener = i.guild.get_member(int(self.opener_uid)) if self.opener_uid.isdigit() else None
                 if opener:
-                    log_embed.add_field(name="ðŸ‘¤ Opened by", value=opener.mention, inline=True)
+                    log_embed.add_field(name="👤 Opened by", value=opener.mention, inline=True)
                 try:
                     await log_ch.send(embed=log_embed)
                 except Exception:
@@ -1906,7 +1906,7 @@ class TicketCloseModal(discord.ui.Modal, title="ðŸ”’ Close Ticket"):
             del gc["active_tickets"][self.opener_uid]
             save_config(cfg)
         try:
-            await i.channel.delete(reason=f"Ticket closed by {i.user} â€” {reason_text}")
+            await i.channel.delete(reason=f"Ticket closed by {i.user} — {reason_text}")
         except Exception:
             pass
 
@@ -1915,7 +1915,7 @@ async def handle_open_ticket(i: discord.Interaction):
     gc  = guild_cfg(cfg, i.guild.id)
     uid = str(i.user.id)
 
-    # â”€â”€ Max tickets check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Max tickets check ─────────────────────────────────────────────────
     max_tickets = gc["ticket"].get("max_tickets", 1)
     user_tickets = [ch_id for u, ch_id in gc["active_tickets"].items()
                     if u == uid and i.guild.get_channel(ch_id)]
@@ -1928,7 +1928,7 @@ async def handle_open_ticket(i: discord.Interaction):
             msg = (f"You have reached the maximum of **{max_tickets}** open tickets.\n"
                    f"Please close one before opening a new one.")
         return await i.response.send_message(embed=base_embed(
-            "ðŸŽ« Ticket Limit Reached", msg, color=0xF59E0B), ephemeral=True)
+            "🎫 Ticket Limit Reached", msg, color=0xF59E0B), ephemeral=True)
 
     # Clean up stale ticket records where channel no longer exists
     stale = [u for u, ch_id in gc["active_tickets"].items()
@@ -1941,12 +1941,12 @@ async def handle_open_ticket(i: discord.Interaction):
     category = i.guild.get_channel(gc["ticket"].get("category"))
     if not category:
         return await i.response.send_message(embed=error_embed(
-            "âŒ Ticket category not configured.\nAsk an admin to run `/ticket setup` first."), ephemeral=True)
+            "❌ Ticket category not configured.\nAsk an admin to run `/ticket setup` first."), ephemeral=True)
 
     safe = re.sub(r"[^a-z0-9]", "", i.user.name.lower()) or "user"
     ticket_num = len(gc["active_tickets"]) + 1
 
-    # â”€â”€ Build permission overwrites â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Build permission overwrites ───────────────────────────────────────
     ovw = {
         i.guild.default_role: discord.PermissionOverwrite(read_messages=False),
         i.user:               discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
@@ -1969,12 +1969,12 @@ async def handle_open_ticket(i: discord.Interaction):
 
     await i.response.send_message(
         embed=base_embed(
-            "ðŸŽ« Ticket Created",
+            "🎫 Ticket Created",
             f"Your ticket has been created: {ch.mention}\nOur support team will assist you shortly.",
             color=0x22C55E
         ), ephemeral=True)
 
-    # â”€â”€ Professional welcome embed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Professional welcome embed ────────────────────────────────────────
     sr_mention = support_role.mention if support_role else ""
 
     class CloseView(discord.ui.View):
@@ -1982,7 +1982,7 @@ async def handle_open_ticket(i: discord.Interaction):
             super().__init__(timeout=None)
 
         @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger,
-                           emoji="ðŸ”’", custom_id=f"joy_ticket_close_{ch.id}")
+                           emoji="🔒", custom_id=f"joy_ticket_close_{ch.id}")
         async def close_btn(self, interaction: discord.Interaction, _btn):
             # Check permission
             can_close = (
@@ -1992,7 +1992,7 @@ async def handle_open_ticket(i: discord.Interaction):
             )
             if not can_close:
                 return await interaction.response.send_message(
-                    embed=error_embed("âŒ You don't have permission to close this ticket."),
+                    embed=error_embed("❌ You don't have permission to close this ticket."),
                     ephemeral=True)
             # Find opener uid
             inner = guild_cfg(cfg, interaction.guild.id)
@@ -2001,20 +2001,20 @@ async def handle_open_ticket(i: discord.Interaction):
             await interaction.response.send_modal(TicketCloseModal(opener_uid))
 
     welcome = discord.Embed(
-        title=f"ðŸŽ« Ticket #{ticket_num:04d}",
+        title=f"🎫 Ticket #{ticket_num:04d}",
         description=(
             f"Hello {i.user.mention}, welcome to your support ticket!\n\n"
-            f"{'ðŸ“£ ' + sr_mention + ' has been notified.' if sr_mention else 'ðŸ“£ Support staff has been notified.'}\n\n"
+            f"{'📣 ' + sr_mention + ' has been notified.' if sr_mention else '📣 Support staff has been notified.'}\n\n"
             f"**Please describe your issue in detail** and our team will assist you as soon as possible.\n\n"
-            f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
-            f"ðŸ”’ Click **Close Ticket** when your issue is resolved."
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔒 Click **Close Ticket** when your issue is resolved."
         ),
         color=EMBED_COLOR
     )
-    welcome.add_field(name="ðŸ‘¤ Opened by",  value=f"{i.user.mention} (`{i.user.id}`)", inline=True)
-    welcome.add_field(name="ðŸ• Opened at",  value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=True)
+    welcome.add_field(name="👤 Opened by",  value=f"{i.user.mention} (`{i.user.id}`)", inline=True)
+    welcome.add_field(name="🕐 Opened at",  value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=True)
     welcome.set_thumbnail(url=i.user.display_avatar.url)
-    welcome.set_footer(text="JoyCannot Ticket System â€¢ Close with reason when resolved")
+    welcome.set_footer(text="JoyCannot Ticket System • Close with reason when resolved")
 
     await ch.send(
         content=sr_mention if sr_mention else None,
@@ -2022,22 +2022,22 @@ async def handle_open_ticket(i: discord.Interaction):
         view=CloseView()
     )
 
-    # â”€â”€ Log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Log ───────────────────────────────────────────────────────────────
     log_id = gc["ticket"].get("log_channel")
     if log_id:
         log_ch = i.guild.get_channel(log_id)
         if log_ch:
-            log_embed = base_embed("ðŸ“‹ Ticket Opened", None, color=0x22C55E)
-            log_embed.add_field(name="ðŸŽ« Ticket",    value=f"{ch.mention} (#{ticket_num:04d})", inline=True)
-            log_embed.add_field(name="ðŸ‘¤ Opened by", value=f"{i.user.mention} (`{i.user.id}`)", inline=True)
-            log_embed.add_field(name="ðŸ• Time",
+            log_embed = base_embed("📋 Ticket Opened", None, color=0x22C55E)
+            log_embed.add_field(name="🎫 Ticket",    value=f"{ch.mention} (#{ticket_num:04d})", inline=True)
+            log_embed.add_field(name="👤 Opened by", value=f"{i.user.mention} (`{i.user.id}`)", inline=True)
+            log_embed.add_field(name="🕐 Time",
                 value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=False)
             try:
                 await log_ch.send(embed=log_embed)
             except Exception:
                 pass
 
-# â”€â”€ PREMIUM (slash) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── PREMIUM (slash) ───────────────────────────
 
 premium_slash = app_commands.Group(name="premium", description="View and order JoyCannot Premium packages.")
 
@@ -2046,11 +2046,11 @@ async def slash_premium_info(i: discord.Interaction):
     packages = cfg.get("premium_packages", [])
     if not packages:
         return await i.response.send_message(
-            embed=info_embed("ðŸ’Ž Premium", "No packages available yet."), ephemeral=True)
-    embed = base_embed("ðŸ’Ž JoyCannot Premium", "Upgrade your server!")
+            embed=info_embed("💎 Premium", "No packages available yet."), ephemeral=True)
+    embed = base_embed("💎 JoyCannot Premium", "Upgrade your server!")
     for p in packages:
         embed.add_field(
-            name=f"{'â­' if p.get('type','')=='basic' else 'ðŸ’Ž'} {p['name']}",
+            name=f"{'⭐' if p.get('type','')=='basic' else '💎'} {p['name']}",
             value=f"**Duration:** {p.get('duration','N/A')}\n**Type:** {p.get('type','N/A')}\n**Price:** {p.get('price','N/A')}",
             inline=True
         )
@@ -2061,21 +2061,21 @@ async def slash_premium_info(i: discord.Interaction):
             continue
         if key == "qris":
             info_txt = data.get("info") or "Available"
-            pay_lines.append(f"âœ… **QRIS** â€” {info_txt}")
+            pay_lines.append(f"✅ **QRIS** — {info_txt}")
         elif key == "bank":
             bn = data.get("bank_name") or "-"
             an = data.get("account_number") or "-"
             anm = data.get("account_name") or "-"
-            pay_lines.append(f"âœ… **Bank Transfer** â€” {bn} Â· `{an}` a/n {anm}")
+            pay_lines.append(f"✅ **Bank Transfer** — {bn} · `{an}` a/n {anm}")
         elif key == "ewallet":
             etype = data.get("type") or "-"
             num   = data.get("number") or "-"
-            pay_lines.append(f"âœ… **E-Wallet** ({etype}) â€” `{num}`")
-    embed.add_field(name="ðŸ’³ Payment Methods",
+            pay_lines.append(f"✅ **E-Wallet** ({etype}) — `{num}`")
+    embed.add_field(name="💳 Payment Methods",
         value="\n".join(pay_lines) if pay_lines else "No payment methods enabled.", inline=False)
     await i.response.send_message(embed=embed)
 
-@premium_slash.command(name="order", description="Order a premium package â€” pick your package and payment method to submit an order.")
+@premium_slash.command(name="order", description="Order a premium package — pick your package and payment method to submit an order.")
 @app_commands.describe(
     package_name="Name of the package to order (start typing to see available options)",
     payment="Your preferred payment method"
@@ -2094,7 +2094,7 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
     if not (isinstance(pm_entry, dict) and pm_entry.get("enabled")):
         return await i.response.send_message(embed=error_embed("Payment method not available."), ephemeral=True)
 
-    # â”€â”€ Vote discount check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Vote discount check ───────────────────────────────────────────────
     discount_pct  = get_vote_discount(i.user.id)
     original_price = pkg.get("price", "N/A")
     if discount_pct > 0:
@@ -2108,19 +2108,19 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
                 discounted    = int(base_val * (1 - discount_pct / 100))
                 # Reformat with same prefix/suffix style
                 prefix        = original_price[:original_price.index(nums[0])].rstrip()
-                price_display = f"~~{original_price}~~ â†’ **{prefix} {discounted:,}** (-{discount_pct}% vote discount ðŸ—³ï¸)"
+                price_display = f"~~{original_price}~~ → **{prefix} {discounted:,}** (-{discount_pct}% vote discount 🗳️)"
             except Exception:
-                price_display = f"{original_price} (-{discount_pct}% vote discount ðŸ—³ï¸)"
+                price_display = f"{original_price} (-{discount_pct}% vote discount 🗳️)"
         else:
-            price_display = f"{original_price} (-{discount_pct}% vote discount ðŸ—³ï¸)"
+            price_display = f"{original_price} (-{discount_pct}% vote discount 🗳️)"
     else:
         price_display = original_price
 
-    # â”€â”€ Build payment detail string â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Build payment detail string ───────────────────────────────────────
     if payment == "qris":
         pay_detail = pm_entry.get("info") or "Scan QRIS di bawah."
         if pm_entry.get("image_url"):
-            pay_detail += f"\n[ðŸ“· Lihat QRIS]({pm_entry['image_url']})"
+            pay_detail += f"\n[📷 Lihat QRIS]({pm_entry['image_url']})"
     elif payment == "bank":
         pay_detail = (f"**Bank:** {pm_entry.get('bank_name','-')}\n"
                       f"**No. Rekening:** `{pm_entry.get('account_number','-')}`\n"
@@ -2129,16 +2129,16 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
         pay_detail = (f"**Tipe:** {pm_entry.get('type','-')}\n"
                       f"**Nomor:** `{pm_entry.get('number','-')}`")
 
-    # â”€â”€ DM user: payment instructions + request proof â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── DM user: payment instructions + request proof ────────────────────
     proof_request = base_embed(
-        "ðŸ’Ž Order Received â€” Awaiting Payment",
+        "💎 Order Received — Awaiting Payment",
         f"Terima kasih sudah order **{pkg['name']}**!\n\n"
         f"**Total:** {price_display}\n"
         f"**Metode:** {payment.upper()}\n\n"
         f"{pay_detail}\n\n"
-        "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
-        "ðŸ“Ž **Setelah bayar, kirim screenshot bukti pembayaran di sini (DM ini).**\n"
-        "â³ Bukti ditunggu selama **15 menit**. Lebih dari itu order otomatis dibatalkan.",
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📎 **Setelah bayar, kirim screenshot bukti pembayaran di sini (DM ini).**\n"
+        "⏳ Bukti ditunggu selama **15 menit**. Lebih dari itu order otomatis dibatalkan.",
         color=0xF59E0B
     )
 
@@ -2147,14 +2147,14 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
         await dm_channel.send(embed=proof_request)
     except discord.Forbidden:
         return await i.response.send_message(
-            embed=error_embed("âŒ Bot tidak bisa DM kamu.\nAktifkan DM dari server ini di Privacy Settings, lalu coba lagi."),
+            embed=error_embed("❌ Bot tidak bisa DM kamu.\nAktifkan DM dari server ini di Privacy Settings, lalu coba lagi."),
             ephemeral=True)
 
     await i.response.send_message(
         embed=success_embed("Order diterima! Cek DM kamu untuk instruksi pembayaran & kirim bukti bayar."),
         ephemeral=True)
 
-    # â”€â”€ Store pending proof entry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Store pending proof entry ─────────────────────────────────────────
     pending_proofs[i.user.id] = {
         "pkg":          pkg,
         "payment":      payment,
@@ -2167,7 +2167,7 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
         "price_display": price_display,
     }
 
-    # â”€â”€ Background task: wait for proof message in DM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Background task: wait for proof message in DM ────────────────────
     async def wait_for_proof():
         TIMEOUT = 15 * 60  # 15 minutes
 
@@ -2184,7 +2184,7 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
             pending_proofs.pop(i.user.id, None)
             try:
                 await dm_channel.send(embed=error_embed(
-                    "â° Waktu habis! Order kamu dibatalkan karena bukti pembayaran tidak diterima dalam 15 menit.\n"
+                    "⏰ Waktu habis! Order kamu dibatalkan karena bukti pembayaran tidak diterima dalam 15 menit.\n"
                     "Silakan `/premium order` lagi jika masih ingin berlangganan."))
             except Exception:
                 pass
@@ -2192,8 +2192,8 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
 
         pending_proofs.pop(i.user.id, None)
 
-        # â”€â”€ Build order embed for owner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        order_embed = base_embed("ðŸ’Ž New Premium Order â€” Bukti Diterima",
+        # ── Build order embed for owner ───────────────────────────────────
+        order_embed = base_embed("💎 New Premium Order — Bukti Diterima",
             f"**Package:** {pkg['name']}\n"
             f"**Duration:** {pkg.get('duration','N/A')}\n"
             f"**Price:** {price_display}\n"
@@ -2208,13 +2208,13 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
             color=0x22C55E)
 
         # Fix: add ordered by/server as fields so it's always shown
-        order_embed.add_field(name="ðŸ‘¤ Ordered by", value=f"{i.user.mention} (`{i.user.id}`)", inline=True)
-        order_embed.add_field(name="ðŸ  Server", value=f"{i.guild.name} (`{i.guild.id}`)", inline=True)
+        order_embed.add_field(name="👤 Ordered by", value=f"{i.user.mention} (`{i.user.id}`)", inline=True)
+        order_embed.add_field(name="🏠 Server", value=f"{i.guild.name} (`{i.guild.id}`)", inline=True)
         if discount_pct:
-            order_embed.add_field(name="ðŸ—³ï¸ Vote Discount", value=f"{discount_pct}%", inline=True)
+            order_embed.add_field(name="🗳️ Vote Discount", value=f"{discount_pct}%", inline=True)
 
         if proof_msg.content.strip():
-            order_embed.add_field(name="ðŸ“ Pesan dari Buyer", value=proof_msg.content[:500], inline=False)
+            order_embed.add_field(name="📝 Pesan dari Buyer", value=proof_msg.content[:500], inline=False)
 
         owner = await bot.fetch_user(bot.owner_id)
         if owner:
@@ -2227,16 +2227,16 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
                 await owner.send(embed=order_embed, view=btn_view)
                 for att in proof_msg.attachments:
                     await owner.send(
-                        content=f"ðŸ“Ž **Bukti pembayaran dari {i.user}:**",
+                        content=f"📎 **Bukti pembayaran dari {i.user}:**",
                         file=await att.to_file())
             except Exception:
                 pass
 
         try:
             await dm_channel.send(embed=success_embed(
-                "âœ… Bukti pembayaran kamu sudah diterima!\n"
+                "✅ Bukti pembayaran kamu sudah diterima!\n"
                 "Tim kami akan memverifikasi dan mengaktifkan premium sesegera mungkin.\n"
-                "Terima kasih! ðŸ™"))
+                "Terima kasih! 🙏"))
         except Exception:
             pass
 
@@ -2244,15 +2244,15 @@ async def slash_premium_order(i: discord.Interaction, package_name: str, payment
 
 bot.tree.add_command(premium_slash)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-#  FIX #3 â€” EVENT SYSTEM (LIVE COUNTDOWN)
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  FIX #3 — EVENT SYSTEM (LIVE COUNTDOWN)
 #  Phase 1: Send embed with live Discord
 #           relative timestamp countdown.
-#  Phase 2: At start_time â†’ edit embed â†’ ðŸŸ¢ LIVE
-#  Phase 3: At end_time   â†’ edit embed â†’ ðŸ”´ ENDED
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Phase 2: At start_time → edit embed → 🟢 LIVE
+#  Phase 3: At end_time   → edit embed → 🔴 ENDED
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 event_group = app_commands.Group(name="event", description="Schedule and announce events with a live countdown.")
 
@@ -2267,12 +2267,12 @@ async def slash_event_channel(i: discord.Interaction, channel: discord.TextChann
     save_config(cfg)
     await i.response.send_message(embed=success_embed(f"Announce channel set to {channel.mention}!"))
 
-@event_group.command(name="create", description="Schedule an event with a live countdown â†’ auto-updates to LIVE â†’ ENDED.")
+@event_group.command(name="create", description="Schedule an event with a live countdown → auto-updates to LIVE → ENDED.")
 @app_commands.describe(
     title="Event title shown in the announcement embed (e.g. 'Community Game Night')",
     name="Short event name or topic (e.g. 'Among Us Tournament')",
-    start_time="Start time in WIB â€” format: DD/MM/YYYY HH:MM (e.g. 25/12/2025 20:00)",
-    duration="How long the event runs â€” e.g. 1h, 30m, 1h30m, 2h"
+    start_time="Start time in WIB — format: DD/MM/YYYY HH:MM (e.g. 25/12/2025 20:00)",
+    duration="How long the event runs — e.g. 1h, 30m, 1h30m, 2h"
 )
 async def slash_event_create(
     i: discord.Interaction,
@@ -2310,34 +2310,34 @@ async def slash_event_create(
     dt_utc  = dt_wib.astimezone(pytz.utc).replace(tzinfo=datetime.timezone.utc)
     end_utc = dt_utc + datetime.timedelta(seconds=dur_secs)
 
-    # â”€â”€ Phase 1: SCHEDULED embed (countdown) â”€â”€
+    # ── Phase 1: SCHEDULED embed (countdown) ──
     def make_scheduled_embed() -> discord.Embed:
-        embed = base_embed(f"ðŸ“… {title}", f"**{name}**", color=0xF59E0B)
-        embed.add_field(name="ðŸ“Œ Status",      value="â³ **Scheduled**",                         inline=True)
-        embed.add_field(name="ðŸ• Start (WIB)", value=dt_wib.strftime("%d %b %Y â€” %H:%M WIB"),   inline=True)
-        embed.add_field(name="â±ï¸ Duration",    value=fmt_duration(dur_secs),                     inline=True)
-        embed.add_field(name="â° Starts",      value=discord.utils.format_dt(dt_utc, "R"),       inline=False)
-        embed.set_footer(text="JoyCannot Event System â€¢ Status auto-updates")
+        embed = base_embed(f"📅 {title}", f"**{name}**", color=0xF59E0B)
+        embed.add_field(name="📌 Status",      value="⏳ **Scheduled**",                         inline=True)
+        embed.add_field(name="🕐 Start (WIB)", value=dt_wib.strftime("%d %b %Y — %H:%M WIB"),   inline=True)
+        embed.add_field(name="⏱️ Duration",    value=fmt_duration(dur_secs),                     inline=True)
+        embed.add_field(name="⏰ Starts",      value=discord.utils.format_dt(dt_utc, "R"),       inline=False)
+        embed.set_footer(text="JoyCannot Event System • Status auto-updates")
         return embed
 
-    # â”€â”€ Phase 2: LIVE embed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Phase 2: LIVE embed ────────────────────
     def make_live_embed() -> discord.Embed:
-        embed = base_embed(f"ðŸŸ¢ {title} â€” LIVE NOW!", f"**{name}**", color=0x22C55E)
-        embed.add_field(name="ðŸ“Œ Status",      value="ðŸŸ¢ **LIVE**",                              inline=True)
-        embed.add_field(name="ðŸ• Started",     value=dt_wib.strftime("%d %b %Y â€” %H:%M WIB"),   inline=True)
-        embed.add_field(name="â±ï¸ Duration",    value=fmt_duration(dur_secs),                     inline=True)
-        embed.add_field(name="ðŸ Ends",        value=discord.utils.format_dt(end_utc, "R"),      inline=False)
-        embed.set_footer(text="JoyCannot Event System â€¢ Event is live!")
+        embed = base_embed(f"🟢 {title} — LIVE NOW!", f"**{name}**", color=0x22C55E)
+        embed.add_field(name="📌 Status",      value="🟢 **LIVE**",                              inline=True)
+        embed.add_field(name="🕐 Started",     value=dt_wib.strftime("%d %b %Y — %H:%M WIB"),   inline=True)
+        embed.add_field(name="⏱️ Duration",    value=fmt_duration(dur_secs),                     inline=True)
+        embed.add_field(name="🏁 Ends",        value=discord.utils.format_dt(end_utc, "R"),      inline=False)
+        embed.set_footer(text="JoyCannot Event System • Event is live!")
         return embed
 
-    # â”€â”€ Phase 3: ENDED embed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Phase 3: ENDED embed ───────────────────
     def make_ended_embed() -> discord.Embed:
-        embed = base_embed(f"ðŸ”´ {title} â€” Ended", f"**{name}**", color=0xEF4444)
-        embed.add_field(name="ðŸ“Œ Status",      value="ðŸ”´ **Ended**",                             inline=True)
-        embed.add_field(name="ðŸ• Started",     value=dt_wib.strftime("%d %b %Y â€” %H:%M WIB"),   inline=True)
-        embed.add_field(name="â±ï¸ Duration",    value=fmt_duration(dur_secs),                     inline=True)
-        embed.add_field(name="âœ… Finished at",  value=discord.utils.format_dt(end_utc, "f"),     inline=False)
-        embed.set_footer(text="JoyCannot Event System â€¢ This event has ended.")
+        embed = base_embed(f"🔴 {title} — Ended", f"**{name}**", color=0xEF4444)
+        embed.add_field(name="📌 Status",      value="🔴 **Ended**",                             inline=True)
+        embed.add_field(name="🕐 Started",     value=dt_wib.strftime("%d %b %Y — %H:%M WIB"),   inline=True)
+        embed.add_field(name="⏱️ Duration",    value=fmt_duration(dur_secs),                     inline=True)
+        embed.add_field(name="✅ Finished at",  value=discord.utils.format_dt(end_utc, "f"),     inline=False)
+        embed.set_footer(text="JoyCannot Event System • This event has ended.")
         return embed
 
     # Send Phase 1
@@ -2356,7 +2356,7 @@ async def slash_event_create(
             if wait_start > 330:
                 await asyncio.sleep(wait_start - 300)
                 try:
-                    remind = base_embed(f"â° Starting in 5 minutes â€” {title}",
+                    remind = base_embed(f"⏰ Starting in 5 minutes — {title}",
                         f"**{name}** begins {discord.utils.format_dt(dt_utc, 'R')}!", color=0xF59E0B)
                     await announce_ch.send("@everyone", embed=remind)
                 except Exception:
@@ -2370,7 +2370,7 @@ async def slash_event_create(
         try:
             await msg.edit(embed=make_live_embed())
             await announce_ch.send("@everyone", embed=base_embed(
-                f"ðŸŸ¢ {title} is now LIVE!", f"**{name}** has started!", color=0x22C55E))
+                f"🟢 {title} is now LIVE!", f"**{name}** has started!", color=0x22C55E))
         except Exception:
             pass
 
@@ -2381,7 +2381,7 @@ async def slash_event_create(
         try:
             await msg.edit(embed=make_ended_embed())
             await announce_ch.send(embed=base_embed(
-                f"ðŸ”´ {title} has ended.", f"Thank you for joining **{name}**!", color=0xEF4444))
+                f"🔴 {title} has ended.", f"Thank you for joining **{name}**!", color=0xEF4444))
         except Exception:
             pass
 
@@ -2389,13 +2389,13 @@ async def slash_event_create(
 
 bot.tree.add_command(event_group)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-#  FIX #2 â€” PREFIX BRIDGE FOR SLASH COMMANDS
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  FIX #2 — PREFIX BRIDGE FOR SLASH COMMANDS
 #  These mirror every slash command so users
 #  can also type e.g. "!Joy kick @user"
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 @bot.command(name="kick")
 async def pfx_kick(ctx, member: discord.Member, *, reason: str = "No reason provided."):
@@ -2444,18 +2444,18 @@ async def pfx_help(ctx):
 @bot.command(name="addemoji")
 async def pfx_addemoji(ctx, emoji_or_url: str = "", *, name: str = ""):
     """
-    !Joy addemoji <:emoji:id>           â†’ copy emoji from another server
-    !Joy addemoji <:emoji:id> newname   â†’ copy with custom name
-    !Joy addemoji <url> <name>          â†’ add from image URL
+    !Joy addemoji <:emoji:id>           → copy emoji from another server
+    !Joy addemoji <:emoji:id> newname   → copy with custom name
+    !Joy addemoji <url> <name>          → add from image URL
     """
     if not ctx.author.guild_permissions.manage_emojis:
         return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
     if not emoji_or_url:
         return await ctx.send(embed=error_embed(
             "**Usage:**\n"
-            "`!Joy addemoji <:emoji:id>` â€” paste emoji from another server\n"
-            "`!Joy addemoji <:emoji:id> customname` â€” paste with custom name\n"
-            "`!Joy addemoji <url> <name>` â€” add from image URL"))
+            "`!Joy addemoji <:emoji:id>` — paste emoji from another server\n"
+            "`!Joy addemoji <:emoji:id> customname` — paste with custom name\n"
+            "`!Joy addemoji <url> <name>` — add from image URL"))
     result = await do_addemoji(ctx.guild, emoji_or_url, name)
     if result["success"]:
         emoji = result["emoji"]
@@ -2477,8 +2477,8 @@ async def pfx_language(ctx, action: str = "list", lang: str = ""):
         await ctx.send(embed=success_embed(t(cfg, ctx.guild.id, "lang_set", lang=LANGUAGES[lang])))
     else:
         cur   = guild_cfg(cfg, ctx.guild.id).get("language", "en")
-        lines = "\n".join(f"{'âœ…' if k==cur else 'â—½'} `{k}` â€” {v}" for k, v in LANGUAGES.items())
-        await ctx.send(embed=info_embed("ðŸŒ Supported Languages", lines))
+        lines = "\n".join(f"{'✅' if k==cur else '◽'} `{k}` — {v}" for k, v in LANGUAGES.items())
+        await ctx.send(embed=info_embed("🌐 Supported Languages", lines))
 
 # Event prefix bridge
 @bot.command(name="event")
@@ -2493,19 +2493,19 @@ async def pfx_event(ctx, action: str = "", *, args: str = ""):
         save_config(cfg)
         await ctx.send(embed=success_embed(f"Announce channel set to {ch.mention}!"))
     elif action == "create":
-        await ctx.send(embed=info_embed("ðŸ’¡ Tip",
+        await ctx.send(embed=info_embed("💡 Tip",
             "Use `/event create` for the full event creator with all fields properly labeled."))
     else:
         await ctx.send(embed=error_embed("Actions: `channel`, `create`"))
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-#  FIX #1 â€” PREMIUM SETUP (EMBED + BUTTONS)
-#  Owner uses "!Joy premium" â†’ interactive
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  FIX #1 — PREMIUM SETUP (EMBED + BUTTONS)
+#  Owner uses "!Joy premium" → interactive
 #  embed UI with buttons to manage packages
 #  and payment methods.
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 def is_owner():
     async def predicate(ctx: commands.Context) -> bool:
@@ -2520,82 +2520,82 @@ def build_premium_embed() -> discord.Embed:
     pu       = cfg.get("premium_users", [])
     pg       = cfg.get("premium_guilds", [])
 
-    embed = base_embed("ðŸ’Ž Premium Package Manager",
+    embed = base_embed("💎 Premium Package Manager",
         "Manage packages, payment methods, command locks, and premium users below.")
 
-    # â”€â”€ Packages â”€â”€
+    # ── Packages ──
     if packages:
         pkg_lines = "\n".join(
-            f"**{idx+1}.** `{p['name']}` â€” {p['duration']} â€” {p['type']} â€” {p['price']}"
+            f"**{idx+1}.** `{p['name']}` — {p['duration']} — {p['type']} — {p['price']}"
             for idx, p in enumerate(packages)
         )
     else:
         pkg_lines = "*No packages yet.*"
-    embed.add_field(name="ðŸ“¦ Packages", value=pkg_lines, inline=False)
+    embed.add_field(name="📦 Packages", value=pkg_lines, inline=False)
 
-    # â”€â”€ Payment Methods (with details) â”€â”€
+    # ── Payment Methods (with details) ──
     pay_lines = []
     for key, data in pm.items():
         if not isinstance(data, dict):
             continue
-        status = "âœ…" if data.get("enabled") else "âŒ"
+        status = "✅" if data.get("enabled") else "❌"
         if key == "qris":
             detail = data.get("info") or data.get("image_url") or "*(no detail set)*"
-            pay_lines.append(f"{status} **QRIS** â€” {detail[:60]}")
+            pay_lines.append(f"{status} **QRIS** — {detail[:60]}")
         elif key == "bank":
             bn  = data.get("bank_name") or "-"
             an  = data.get("account_number") or "-"
             anm = data.get("account_name") or "-"
-            pay_lines.append(f"{status} **Bank** â€” {bn} Â· `{an}` a/n {anm}")
+            pay_lines.append(f"{status} **Bank** — {bn} · `{an}` a/n {anm}")
         elif key == "ewallet":
             etype = data.get("type") or "-"
             num   = data.get("number") or "-"
-            pay_lines.append(f"{status} **E-Wallet** ({etype}) â€” `{num}`")
-    embed.add_field(name="ðŸ’³ Payment Methods", value="\n".join(pay_lines) or "*(none)*", inline=False)
+            pay_lines.append(f"{status} **E-Wallet** ({etype}) — `{num}`")
+    embed.add_field(name="💳 Payment Methods", value="\n".join(pay_lines) or "*(none)*", inline=False)
 
-    # â”€â”€ Premium-locked commands â”€â”€
+    # ── Premium-locked commands ──
     embed.add_field(
-        name="ðŸ”’ Premium-Locked Commands",
+        name="🔒 Premium-Locked Commands",
         value=", ".join(f"`{c}`" for c in pc) if pc else "*(none locked)*",
         inline=False
     )
 
-    # â”€â”€ Premium users â”€â”€
+    # ── Premium users ──
     embed.add_field(
-        name="ðŸ‘‘ Premium Users",
-        value=", ".join(f"`{uid}`" for uid in pu[:10]) + ("â€¦" if len(pu) > 10 else "") if pu else "*(none)*",
+        name="👑 Premium Users",
+        value=", ".join(f"`{uid}`" for uid in pu[:10]) + ("…" if len(pu) > 10 else "") if pu else "*(none)*",
         inline=False
     )
 
-    # â”€â”€ Premium guilds (nickname activated) â”€â”€
+    # ── Premium guilds (nickname activated) ──
     if pg:
         guild_lines = []
         for gid in pg[:10]:
             g = bot.get_guild(gid)
-            guild_lines.append(f"âœ… **{g.name}** (`{gid}`)" if g else f"âœ… `{gid}` *(offline)*")
-        guild_lines_str = "\n".join(guild_lines) + ("â€¦" if len(pg) > 10 else "")
+            guild_lines.append(f"✅ **{g.name}** (`{gid}`)" if g else f"✅ `{gid}` *(offline)*")
+        guild_lines_str = "\n".join(guild_lines) + ("…" if len(pg) > 10 else "")
     else:
         guild_lines_str = "*(none activated)*"
-    embed.add_field(name="ðŸ·ï¸ Premium Guilds (Nickname Active)", value=guild_lines_str, inline=False)
+    embed.add_field(name="🏷️ Premium Guilds (Nickname Active)", value=guild_lines_str, inline=False)
 
-    # â”€â”€ Vote discount config â”€â”€
+    # ── Vote discount config ──
     discount   = cfg.get("vote_discount", 10)
-    has_secret = "âœ… Set" if cfg.get("topgg_webhook_secret") else "âŒ Not set"
+    has_secret = "✅ Set" if cfg.get("topgg_webhook_secret") else "❌ Not set"
     embed.add_field(
-        name="ðŸ—³ï¸ Vote Settings",
+        name="🗳️ Vote Settings",
         value=f"**Discount:** {discount}%  |  **Webhook Secret:** {has_secret}",
         inline=False
     )
 
-    # â”€â”€ Avatar config â”€â”€
+    # ── Avatar config ──
     av_def  = cfg.get("avatar_default", "")
     av_prem = cfg.get("avatar_premium", "")
     embed.add_field(
-        name="ðŸ–¼ï¸ Bot Avatars",
+        name="🖼️ Bot Avatars",
         value=(
-            f"**Default:** {'âœ… Set' if av_def else 'âŒ Not set'}\n"
-            f"**Premium:** {'âœ… Set' if av_prem else 'âŒ Not set'}\n"
-            f"**Current state:** {'ðŸŸ¡ Premium avatar active' if cfg.get('premium_guilds') else 'âšª Default avatar active'}"
+            f"**Default:** {'✅ Set' if av_def else '❌ Not set'}\n"
+            f"**Premium:** {'✅ Set' if av_prem else '❌ Not set'}\n"
+            f"**Current state:** {'🟡 Premium avatar active' if cfg.get('premium_guilds') else '⚪ Default avatar active'}"
         ),
         inline=False
     )
@@ -2611,14 +2611,14 @@ class PremiumManagerView(discord.ui.View):
     def check_owner(self, i: discord.Interaction) -> bool:
         return i.user.id == self.owner_id
 
-    # â”€â”€ ROW 0: Package management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    @discord.ui.button(label="âž• Add Package", style=discord.ButtonStyle.success, row=0)
+    # ── ROW 0: Package management ─────────────────────────────
+    @discord.ui.button(label="➕ Add Package", style=discord.ButtonStyle.success, row=0)
     async def add_package(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(AddPackageModal())
 
-    @discord.ui.button(label="ðŸ—‘ï¸ Remove Package", style=discord.ButtonStyle.danger, row=0)
+    @discord.ui.button(label="🗑️ Remove Package", style=discord.ButtonStyle.danger, row=0)
     async def remove_package(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
@@ -2627,8 +2627,8 @@ class PremiumManagerView(discord.ui.View):
             return await i.response.send_message(embed=error_embed("No packages to remove."), ephemeral=True)
         await i.response.send_modal(RemovePackageModal())
 
-    # â”€â”€ ROW 1: Toggle payment methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    @discord.ui.button(label="QRIS ðŸ”„", style=discord.ButtonStyle.secondary, row=1)
+    # ── ROW 1: Toggle payment methods ────────────────────────
+    @discord.ui.button(label="QRIS 🔄", style=discord.ButtonStyle.secondary, row=1)
     async def toggle_qris(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
@@ -2637,7 +2637,7 @@ class PremiumManagerView(discord.ui.View):
         save_config(cfg)
         await i.response.edit_message(embed=build_premium_embed(), view=self)
 
-    @discord.ui.button(label="Bank ðŸ”„", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Bank 🔄", style=discord.ButtonStyle.secondary, row=1)
     async def toggle_bank(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
@@ -2646,7 +2646,7 @@ class PremiumManagerView(discord.ui.View):
         save_config(cfg)
         await i.response.edit_message(embed=build_premium_embed(), view=self)
 
-    @discord.ui.button(label="E-Wallet ðŸ”„", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="E-Wallet 🔄", style=discord.ButtonStyle.secondary, row=1)
     async def toggle_ewallet(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
@@ -2655,76 +2655,76 @@ class PremiumManagerView(discord.ui.View):
         save_config(cfg)
         await i.response.edit_message(embed=build_premium_embed(), view=self)
 
-    # â”€â”€ ROW 2: Set payment details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    @discord.ui.button(label="ðŸ“· Set QRIS", style=discord.ButtonStyle.primary, row=2)
+    # ── ROW 2: Set payment details ────────────────────────────
+    @discord.ui.button(label="📷 Set QRIS", style=discord.ButtonStyle.primary, row=2)
     async def set_qris(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(SetQRISModal())
 
-    @discord.ui.button(label="ðŸ¦ Set Bank", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="🏦 Set Bank", style=discord.ButtonStyle.primary, row=2)
     async def set_bank(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(SetBankModal())
 
-    @discord.ui.button(label="ðŸ“± Set E-Wallet", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="📱 Set E-Wallet", style=discord.ButtonStyle.primary, row=2)
     async def set_ewallet(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(SetEWalletModal())
 
-    # â”€â”€ ROW 3: Command lock + premium users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    @discord.ui.button(label="ðŸ”’ Lock Command", style=discord.ButtonStyle.danger, row=3)
+    # ── ROW 3: Command lock + premium users ───────────────────
+    @discord.ui.button(label="🔒 Lock Command", style=discord.ButtonStyle.danger, row=3)
     async def lock_command(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(LockCommandModal())
 
-    @discord.ui.button(label="ðŸ”“ Unlock Command", style=discord.ButtonStyle.success, row=3)
+    @discord.ui.button(label="🔓 Unlock Command", style=discord.ButtonStyle.success, row=3)
     async def unlock_command(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(UnlockCommandModal())
 
-    @discord.ui.button(label="ðŸ‘¤ Add Premium User", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="👤 Add Premium User", style=discord.ButtonStyle.secondary, row=3)
     async def add_premium_user(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(AddPremiumUserModal())
 
-    # â”€â”€ ROW 4: Guild premium nickname â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    @discord.ui.button(label="ðŸ·ï¸ Activate Guild", style=discord.ButtonStyle.success, row=4)
+    # ── ROW 4: Guild premium nickname ─────────────────────────
+    @discord.ui.button(label="🏷️ Activate Guild", style=discord.ButtonStyle.success, row=4)
     async def activate_guild(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(GuildNickModal(activate=True))
 
-    @discord.ui.button(label="ðŸ—‘ï¸ Deactivate Guild", style=discord.ButtonStyle.danger, row=4)
+    @discord.ui.button(label="🗑️ Deactivate Guild", style=discord.ButtonStyle.danger, row=4)
     async def deactivate_guild(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(GuildNickModal(activate=False))
 
-    @discord.ui.button(label="ðŸ”ƒ Refresh", style=discord.ButtonStyle.primary, row=4)
+    @discord.ui.button(label="🔃 Refresh", style=discord.ButtonStyle.primary, row=4)
     async def refresh(self, i: discord.Interaction, _btn: discord.ui.Button):
         await i.response.edit_message(embed=build_premium_embed(), view=self)
 
-    # â”€â”€ ROW 5: Vote settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    @discord.ui.button(label="ðŸ—³ï¸ Set Vote Discount", style=discord.ButtonStyle.secondary, row=4)
+    # ── ROW 5: Vote settings ──────────────────────────────────────────────
+    @discord.ui.button(label="🗳️ Set Vote Discount", style=discord.ButtonStyle.secondary, row=4)
     async def set_vote_discount(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(VoteSettingsModal())
 
-    @discord.ui.button(label="ðŸ–¼ï¸ Set Avatars", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="🖼️ Set Avatars", style=discord.ButtonStyle.secondary, row=4)
     async def set_avatars(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(SetAvatarsModal())
 
 
-class AddPackageModal(discord.ui.Modal, title="âž• Add Premium Package"):
+class AddPackageModal(discord.ui.Modal, title="➕ Add Premium Package"):
     pkg_name = discord.ui.TextInput(label="Package Name",        placeholder="e.g. Gold",          max_length=50)
     duration = discord.ui.TextInput(label="Duration",            placeholder="e.g. 30 days",       max_length=30)
     pkg_type = discord.ui.TextInput(label="Type",                placeholder="basic / premium / vip", max_length=20)
@@ -2741,7 +2741,7 @@ class AddPackageModal(discord.ui.Modal, title="âž• Add Premium Package"):
         await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
-class RemovePackageModal(discord.ui.Modal, title="ðŸ—‘ï¸ Remove Premium Package"):
+class RemovePackageModal(discord.ui.Modal, title="🗑️ Remove Premium Package"):
     pkg_name = discord.ui.TextInput(label="Package Name to Remove", placeholder="Exact name", max_length=50)
 
     async def on_submit(self, i: discord.Interaction):
@@ -2759,13 +2759,13 @@ class RemovePackageModal(discord.ui.Modal, title="ðŸ—‘ï¸ Remove Premiu
                 embed=error_embed(f"Package `{self.pkg_name.value}` not found."), ephemeral=True)
 
 
-# â”€â”€ Payment detail modals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Payment detail modals ─────────────────────────────────────────────────
 
-class SetQRISModal(discord.ui.Modal, title="ðŸ“· Set QRIS Details"):
+class SetQRISModal(discord.ui.Modal, title="📷 Set QRIS Details"):
     image_url = discord.ui.TextInput(
         label="QRIS Image URL", placeholder="https://... (link to QR image)", max_length=300, required=False)
     info = discord.ui.TextInput(
-        label="Info / Description", placeholder="e.g. Scan QR â†’ confirm Rp amount",
+        label="Info / Description", placeholder="e.g. Scan QR → confirm Rp amount",
         max_length=100, required=False)
 
     async def on_submit(self, i: discord.Interaction):
@@ -2775,7 +2775,7 @@ class SetQRISModal(discord.ui.Modal, title="ðŸ“· Set QRIS Details"):
         await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
-class SetBankModal(discord.ui.Modal, title="ðŸ¦ Set Bank Transfer Details"):
+class SetBankModal(discord.ui.Modal, title="🏦 Set Bank Transfer Details"):
     bank_name      = discord.ui.TextInput(label="Nama Bank",      placeholder="e.g. BCA / Mandiri", max_length=50)
     account_number = discord.ui.TextInput(label="Nomor Rekening", placeholder="e.g. 1234567890",   max_length=30)
     account_name   = discord.ui.TextInput(label="Atas Nama",      placeholder="e.g. John Doe",     max_length=60)
@@ -2788,7 +2788,7 @@ class SetBankModal(discord.ui.Modal, title="ðŸ¦ Set Bank Transfer Details")
         await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
-class SetEWalletModal(discord.ui.Modal, title="ðŸ“± Set E-Wallet Details"):
+class SetEWalletModal(discord.ui.Modal, title="📱 Set E-Wallet Details"):
     etype  = discord.ui.TextInput(label="Tipe E-Wallet", placeholder="e.g. GoPay / OVO / Dana / ShopeePay", max_length=50)
     number = discord.ui.TextInput(label="Nomor",         placeholder="e.g. 08123456789",                    max_length=30)
 
@@ -2799,9 +2799,9 @@ class SetEWalletModal(discord.ui.Modal, title="ðŸ“± Set E-Wallet Details"):
         await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
-# â”€â”€ Command lock modals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Command lock modals ───────────────────────────────────────────────────
 
-class LockCommandModal(discord.ui.Modal, title="ðŸ”’ Lock Command (Premium Only)"):
+class LockCommandModal(discord.ui.Modal, title="🔒 Lock Command (Premium Only)"):
     cmd_name = discord.ui.TextInput(
         label="Command Name",
         placeholder="e.g. kick  OR  ticket setup  OR  event create",
@@ -2817,12 +2817,12 @@ class LockCommandModal(discord.ui.Modal, title="ðŸ”’ Lock Command (Premium
             return
         pc.append(name)
         save_config(cfg)
-        # Re-sync slash commands to show ðŸ’Ž label
+        # Re-sync slash commands to show 💎 label
         asyncio.create_task(apply_premium_labels())
         await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
-class UnlockCommandModal(discord.ui.Modal, title="ðŸ”“ Unlock Command"):
+class UnlockCommandModal(discord.ui.Modal, title="🔓 Unlock Command"):
     cmd_name = discord.ui.TextInput(
         label="Command Name to Unlock",
         placeholder="Exact name as shown in Premium-Locked list",
@@ -2842,7 +2842,7 @@ class UnlockCommandModal(discord.ui.Modal, title="ðŸ”“ Unlock Command"):
         await i.response.edit_message(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
-class AddPremiumUserModal(discord.ui.Modal, title="ðŸ‘¤ Add / Remove Premium User"):
+class AddPremiumUserModal(discord.ui.Modal, title="👤 Add / Remove Premium User"):
     user_id  = discord.ui.TextInput(label="User ID",      placeholder="Discord user ID (numbers only)", max_length=20)
     action   = discord.ui.TextInput(label="Action",       placeholder="add  OR  remove",                max_length=6)
 
@@ -2874,13 +2874,13 @@ class GuildNickModal(discord.ui.Modal):
 
     guild_id_input = discord.ui.TextInput(
         label="Guild ID",
-        placeholder="Right-click server â†’ Copy Server ID",
+        placeholder="Right-click server → Copy Server ID",
         max_length=20
     )
 
     def __init__(self, activate: bool):
         action_label = "Activate" if activate else "Deactivate"
-        super().__init__(title=f"ðŸ·ï¸ {action_label} Premium Nickname")
+        super().__init__(title=f"🏷️ {action_label} Premium Nickname")
         self.activate = activate
 
     async def on_submit(self, i: discord.Interaction):
@@ -2905,7 +2905,7 @@ class GuildNickModal(discord.ui.Modal):
             await i.response.defer()
             await set_guild_premium_nick(guild, activate=True)
 
-            # â”€â”€ Switch to premium avatar if this is the FIRST premium guild â”€â”€
+            # ── Switch to premium avatar if this is the FIRST premium guild ──
             if len(cfg.get("premium_guilds", [])) == 1:
                 avatar_url = cfg.get("avatar_premium", "")
                 if avatar_url:
@@ -2913,10 +2913,10 @@ class GuildNickModal(discord.ui.Modal):
 
             await i.followup.send(
                 embed=success_embed(
-                    f"âœ… Premium activated for **{guild.name}**!\n"
-                    f"â€¢ Nickname â†’ `{PREMIUM_NICK}`\n"
-                    f"â€¢ Role â†’ `{PREMIUM_ROLE_NAME}` (yellow)\n"
-                    f"â€¢ Avatar â†’ {'switched to premium ðŸ–¼ï¸' if cfg.get('avatar_premium') else 'not set (configure via Set Avatars button)'}"),
+                    f"✅ Premium activated for **{guild.name}**!\n"
+                    f"• Nickname → `{PREMIUM_NICK}`\n"
+                    f"• Role → `{PREMIUM_ROLE_NAME}` (yellow)\n"
+                    f"• Avatar → {'switched to premium 🖼️' if cfg.get('avatar_premium') else 'not set (configure via Set Avatars button)'}"),
                 ephemeral=True)
             await i.edit_original_response(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
         else:
@@ -2928,7 +2928,7 @@ class GuildNickModal(discord.ui.Modal):
             await i.response.defer()
             await set_guild_premium_nick(guild, activate=False)
 
-            # â”€â”€ Revert to default avatar if NO premium guilds remain â”€â”€â”€â”€â”€â”€
+            # ── Revert to default avatar if NO premium guilds remain ──────
             if len(cfg.get("premium_guilds", [])) == 0:
                 avatar_url = cfg.get("avatar_default", "")
                 if avatar_url:
@@ -2936,16 +2936,16 @@ class GuildNickModal(discord.ui.Modal):
 
             await i.followup.send(
                 embed=success_embed(
-                    f"âœ… Premium deactivated for **{guild.name}**.\n"
-                    f"â€¢ Nickname reset\n"
-                    f"â€¢ Role removed\n"
-                    f"â€¢ Avatar â†’ {'reverted to default ðŸ–¼ï¸' if cfg.get('avatar_default') else 'not set'}"),
+                    f"✅ Premium deactivated for **{guild.name}**.\n"
+                    f"• Nickname reset\n"
+                    f"• Role removed\n"
+                    f"• Avatar → {'reverted to default 🖼️' if cfg.get('avatar_default') else 'not set'}"),
                 ephemeral=True)
             await i.edit_original_response(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
 
-class SetAvatarsModal(discord.ui.Modal, title="ðŸ–¼ï¸ Set Bot Avatars"):
+class SetAvatarsModal(discord.ui.Modal, title="🖼️ Set Bot Avatars"):
     default_url = discord.ui.TextInput(
         label="Default Avatar URL",
         placeholder="Image URL shown when NO server has premium active",
@@ -2977,26 +2977,26 @@ class SetAvatarsModal(discord.ui.Modal, title="ðŸ–¼ï¸ Set Bot Avatars")
 
         save_config(cfg)
 
-        # â”€â”€ Apply immediately based on current premium state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Apply immediately based on current premium state ──────────────
         await i.response.defer()
         has_premium = len(cfg.get("premium_guilds", [])) > 0
         if has_premium and premium:
             ok = await set_bot_avatar(premium)
-            updated.append(f"Premium avatar {'applied âœ…' if ok else 'failed to apply âŒ'}")
+            updated.append(f"Premium avatar {'applied ✅' if ok else 'failed to apply ❌'}")
         elif not has_premium and default:
             ok = await set_bot_avatar(default)
-            updated.append(f"Default avatar {'applied âœ…' if ok else 'failed to apply âŒ'}")
+            updated.append(f"Default avatar {'applied ✅' if ok else 'failed to apply ❌'}")
 
         await i.followup.send(
-            embed=success_embed("\n".join(f"â€¢ {u}" for u in updated)),
+            embed=success_embed("\n".join(f"• {u}" for u in updated)),
             ephemeral=True)
         await i.edit_original_response(embed=build_premium_embed(), view=PremiumManagerView(i.user.id))
 
 
-class VoteSettingsModal(discord.ui.Modal, title="ðŸ—³ï¸ Vote Discount Settings"):
+class VoteSettingsModal(discord.ui.Modal, title="🗳️ Vote Discount Settings"):
     discount_input = discord.ui.TextInput(
         label="Discount % for voters",
-        placeholder="e.g. 10  (means 10% off â€” enter 0 to disable)",
+        placeholder="e.g. 10  (means 10% off — enter 0 to disable)",
         max_length=3
     )
     webhook_secret = discord.ui.TextInput(
@@ -3025,13 +3025,13 @@ class VoteSettingsModal(discord.ui.Modal, title="ðŸ—³ï¸ Vote Discount S
 @bot.command(name="premium")
 @is_owner()
 async def pfx_premium(ctx: commands.Context):
-    """!Joy premium â€” Opens the interactive premium manager (owner only)."""
+    """!Joy premium — Opens the interactive premium manager (owner only)."""
     await ctx.send(embed=build_premium_embed(), view=PremiumManagerView(ctx.author.id))
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â”€â”€ MAINTENANCE BROADCAST (OWNER PREFIX)
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
+# ── MAINTENANCE BROADCAST (OWNER PREFIX)
+# ─────────────────────────────────────────────
 
 class MaintenanceBroadcastView(discord.ui.View):
     def __init__(self, owner_id: int):
@@ -3041,28 +3041,28 @@ class MaintenanceBroadcastView(discord.ui.View):
     def check_owner(self, i: discord.Interaction) -> bool:
         return i.user.id == self.owner_id
 
-    @discord.ui.button(label="ðŸ“ Compose Broadcast", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="📝 Compose Broadcast", style=discord.ButtonStyle.primary, row=0)
     async def compose(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(MaintenanceModal(self.owner_id))
 
-    @discord.ui.button(label="âŒ Cancel", style=discord.ButtonStyle.danger, row=0)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, row=0)
     async def cancel(self, i: discord.Interaction, _btn: discord.ui.Button):
         if not self.check_owner(i):
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.edit_message(
-            embed=info_embed("ðŸš« Cancelled", "Maintenance broadcast manager closed."), view=None)
+            embed=info_embed("🚫 Cancelled", "Maintenance broadcast manager closed."), view=None)
 
 
-class MaintenanceModal(discord.ui.Modal, title="ðŸ“¢ Compose Maintenance Broadcast"):
+class MaintenanceModal(discord.ui.Modal, title="📢 Compose Maintenance Broadcast"):
     def __init__(self, owner_id: int):
         super().__init__()
         self.owner_id = owner_id
 
     title_input = discord.ui.TextInput(
         label="Title", placeholder="e.g. Scheduled Maintenance",
-        max_length=100, default="ðŸ”§ Maintenance Notice")
+        max_length=100, default="🔧 Maintenance Notice")
     description = discord.ui.TextInput(
         label="Message", style=discord.TextStyle.paragraph,
         placeholder="Describe the maintenance...", max_length=1000,
@@ -3075,10 +3075,10 @@ class MaintenanceModal(discord.ui.Modal, title="ðŸ“¢ Compose Maintenance Br
         max_length=200, default="https://status.joycannot.xyz", required=False)
 
     async def on_submit(self, i: discord.Interaction):
-        preview = base_embed(f"ðŸ“¢ {self.title_input.value}", self.description.value, color=0xF59E0B)
-        preview.add_field(name="ðŸ“Š Target Servers", value=str(len(bot.guilds)), inline=True)
-        preview.add_field(name="ðŸ”˜ Button", value=self.btn_label.value or "Status Page", inline=True)
-        preview.set_footer(text="Preview â€” confirm below to broadcast")
+        preview = base_embed(f"📢 {self.title_input.value}", self.description.value, color=0xF59E0B)
+        preview.add_field(name="📊 Target Servers", value=str(len(bot.guilds)), inline=True)
+        preview.add_field(name="🔘 Button", value=self.btn_label.value or "Status Page", inline=True)
+        preview.set_footer(text="Preview — confirm below to broadcast")
 
         view = MaintenanceConfirmView(
             title      = self.title_input.value,
@@ -3099,15 +3099,15 @@ class MaintenanceConfirmView(discord.ui.View):
         self.btn_url     = btn_url
         self.owner_id    = owner_id
 
-    @discord.ui.button(label="âœ… Broadcast Now", style=discord.ButtonStyle.success, row=0)
+    @discord.ui.button(label="✅ Broadcast Now", style=discord.ButtonStyle.success, row=0)
     async def confirm(self, i: discord.Interaction, _btn: discord.ui.Button):
         if i.user.id != self.owner_id:
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.edit_message(
-            embed=info_embed("ðŸ“¤ Broadcasting...", f"Sending to **{len(bot.guilds)}** servers..."),
+            embed=info_embed("📤 Broadcasting...", f"Sending to **{len(bot.guilds)}** servers..."),
             view=None)
 
-        broadcast_embed = base_embed(f"ðŸ“¢ {self.title}", self.description, color=0xF59E0B)
+        broadcast_embed = base_embed(f"📢 {self.title}", self.description, color=0xF59E0B)
         broadcast_embed.add_field(name="Sent by", value=str(i.user), inline=True)
         broadcast_embed.add_field(name="Time",
             value=discord.utils.format_dt(discord.utils.utcnow(), "f"), inline=True)
@@ -3138,38 +3138,38 @@ class MaintenanceConfirmView(discord.ui.View):
                 fail += 1
             await asyncio.sleep(0.5)
 
-        result = success_embed(f"Broadcast complete!\nâœ… Success: **{ok}** | âŒ Failed: **{fail}**")
+        result = success_embed(f"Broadcast complete!\n✅ Success: **{ok}** | ❌ Failed: **{fail}**")
         await i.edit_original_response(embed=result)
 
-    @discord.ui.button(label="âœï¸ Edit", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="✏️ Edit", style=discord.ButtonStyle.secondary, row=0)
     async def edit(self, i: discord.Interaction, _btn: discord.ui.Button):
         if i.user.id != self.owner_id:
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(MaintenanceModal(self.owner_id))
 
-    @discord.ui.button(label="âŒ Cancel", style=discord.ButtonStyle.danger, row=0)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, row=0)
     async def cancel(self, i: discord.Interaction, _btn: discord.ui.Button):
         if i.user.id != self.owner_id:
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
-        await i.response.edit_message(embed=info_embed("ðŸš« Cancelled", "Broadcast cancelled."), view=None)
+        await i.response.edit_message(embed=info_embed("🚫 Cancelled", "Broadcast cancelled."), view=None)
 
 
 @bot.command(name="maintenance")
 @is_owner()
 async def pfx_maintenance(ctx: commands.Context):
-    """!Joy maintenance â€” Opens the interactive Maintenance Broadcast manager (owner only)."""
-    embed = base_embed("ðŸ“¢ Maintenance Broadcast Manager",
+    """!Joy maintenance — Opens the interactive Maintenance Broadcast manager (owner only)."""
+    embed = base_embed("📢 Maintenance Broadcast Manager",
         "Use the button below to compose and preview your maintenance message "
         "before broadcasting it to all servers.")
-    embed.add_field(name="ðŸ“Š Connected Servers", value=str(len(bot.guilds)), inline=True)
-    embed.add_field(name="ðŸ“Œ Note",
+    embed.add_field(name="📊 Connected Servers", value=str(len(bot.guilds)), inline=True)
+    embed.add_field(name="📌 Note",
         value="The message will be sent to the configured `main_channel` of each server.", inline=False)
     await ctx.send(embed=embed, view=MaintenanceBroadcastView(ctx.author.id))
 
 
-class SetChannelModal(discord.ui.Modal, title="ðŸ“Œ Set Main Channel"):
-    guild_id_input   = discord.ui.TextInput(label="Guild ID",   placeholder="Right-click server â†’ Copy ID", max_length=20)
-    channel_id_input = discord.ui.TextInput(label="Channel ID", placeholder="Right-click channel â†’ Copy ID", max_length=20)
+class SetChannelModal(discord.ui.Modal, title="📌 Set Main Channel"):
+    guild_id_input   = discord.ui.TextInput(label="Guild ID",   placeholder="Right-click server → Copy ID", max_length=20)
+    channel_id_input = discord.ui.TextInput(label="Channel ID", placeholder="Right-click channel → Copy ID", max_length=20)
 
     async def on_submit(self, i: discord.Interaction):
         try:
@@ -3183,7 +3183,7 @@ class SetChannelModal(discord.ui.Modal, title="ðŸ“Œ Set Main Channel"):
         guild_name = guild_obj.name if guild_obj else f"ID `{gid}`"
         ch_obj = bot.get_channel(cid)
         ch_name = ch_obj.mention if ch_obj else f"ID `{cid}`"
-        result = base_embed("ðŸ“Œ Main Channel Set",
+        result = base_embed("📌 Main Channel Set",
             f"**Server:** {guild_name}\n**Channel:** {ch_name}")
         await i.response.edit_message(embed=result, view=None)
 
@@ -3193,13 +3193,13 @@ class SetChannelView(discord.ui.View):
         super().__init__(timeout=180)
         self.owner_id = owner_id
 
-    @discord.ui.button(label="ðŸ“Œ Set Channel", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="📌 Set Channel", style=discord.ButtonStyle.primary, row=0)
     async def set_channel(self, i: discord.Interaction, _btn: discord.ui.Button):
         if i.user.id != self.owner_id:
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
         await i.response.send_modal(SetChannelModal())
 
-    @discord.ui.button(label="ðŸ“‹ List Servers", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="📋 List Servers", style=discord.ButtonStyle.secondary, row=0)
     async def list_servers(self, i: discord.Interaction, _btn: discord.ui.Button):
         if i.user.id != self.owner_id:
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
@@ -3208,40 +3208,40 @@ class SetChannelView(discord.ui.View):
             gc      = guild_cfg(cfg, g.id)
             main_ch = g.get_channel(gc.get("main_channel") or 0)
             ch_str  = main_ch.mention if main_ch else "*(not set)*"
-            lines.append(f"**{g.name}** (`{g.id}`) â†’ {ch_str}")
-        embed = base_embed("ðŸ“‹ Server Main Channels",
+            lines.append(f"**{g.name}** (`{g.id}`) → {ch_str}")
+        embed = base_embed("📋 Server Main Channels",
             "\n".join(lines) or "No servers." +
             (f"\n\n*Showing first 20 of {len(bot.guilds)}*" if len(bot.guilds) > 20 else ""))
         await i.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="âŒ Close", style=discord.ButtonStyle.danger, row=0)
+    @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.danger, row=0)
     async def close(self, i: discord.Interaction, _btn: discord.ui.Button):
         if i.user.id != self.owner_id:
             return await i.response.send_message(embed=error_embed("Owner only."), ephemeral=True)
-        await i.response.edit_message(embed=info_embed("ðŸš« Closed", "SetChannel manager closed."), view=None)
+        await i.response.edit_message(embed=info_embed("🚫 Closed", "SetChannel manager closed."), view=None)
 
 
 @bot.command(name="setchannel")
 @is_owner()
 async def pfx_setchannel(ctx: commands.Context):
-    """!Joy setchannel â€” Opens the interactive Set Channel manager (owner only)."""
-    embed = base_embed("ðŸ“Œ Set Main Channel",
+    """!Joy setchannel — Opens the interactive Set Channel manager (owner only)."""
+    embed = base_embed("📌 Set Main Channel",
         "Set the main notification channel for any server the bot is in.\n"
         "Click **Set Channel** and enter the Guild ID and Channel ID.")
-    embed.add_field(name="ðŸ’¡ Tip", value="Enable Developer Mode in Discord settings to copy IDs.", inline=False)
-    embed.add_field(name="ðŸ“Š Connected Servers", value=str(len(bot.guilds)), inline=True)
+    embed.add_field(name="💡 Tip", value="Enable Developer Mode in Discord settings to copy IDs.", inline=False)
+    embed.add_field(name="📊 Connected Servers", value=str(len(bot.guilds)), inline=True)
     await ctx.send(embed=embed, view=SetChannelView(ctx.author.id))
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # ERROR HANDLERS
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
 @bot.tree.error
 async def on_app_command_error(i: discord.Interaction, error: app_commands.AppCommandError):
     msg = (
         t(cfg, i.guild.id if i.guild else 0, "no_perm") if isinstance(error, app_commands.MissingPermissions)
-        else f"â±ï¸ Slow down! Retry in {error.retry_after:.1f}s." if isinstance(error, app_commands.CommandOnCooldown)
+        else f"⏱️ Slow down! Retry in {error.retry_after:.1f}s." if isinstance(error, app_commands.CommandOnCooldown)
         else f"Unexpected error: `{error}`"
     )
     try:
@@ -3255,13 +3255,13 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
         cmd_name = ctx.command.qualified_name if ctx.command else None
         if cmd_name and is_premium_command(cmd_name):
             await ctx.send(embed=base_embed(
-                "ðŸ’Ž Premium Required",
+                "💎 Premium Required",
                 f"The command `{cmd_name}` is only available for **Premium** servers or users.\n\n"
-                "ðŸ“¦ Use `/premium info` to see available packages.\n"
-                "ðŸ“© Use `/premium order` to subscribe.",
+                "📦 Use `/premium info` to see available packages.\n"
+                "📩 Use `/premium order` to subscribe.",
                 color=0xF59E0B))
         else:
-            await ctx.send(embed=error_embed("âŒ Owner only command."))
+            await ctx.send(embed=error_embed("❌ Owner only command."))
     elif isinstance(error, commands.CommandNotFound):
         pass  # Silently ignore unknown cmds
     elif isinstance(error, commands.MissingRequiredArgument):
@@ -3269,19 +3269,19 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     elif isinstance(error, commands.BadArgument):
         await ctx.send(embed=error_embed(f"Invalid argument: {error}\nUse `!Joy help` for usage."))
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 # ENTRY POINT
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  TOP.GG VOTE SYSTEM
 #  - Webhook server receives vote events
 #  - Stores vote timestamp per user
-#  - /premium order checks vote â†’ applies discount
+#  - /premium order checks vote → applies discount
 #  - Discount % configurable by owner
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 TOPGG_WEBHOOK_PORT  = int(os.getenv("PORT") or os.getenv("TOPGG_WEBHOOK_PORT") or "5000")
 VOTE_COOLDOWN_HOURS = 12
@@ -3315,7 +3315,7 @@ async def start_vote_webhook():
     try:
         from aiohttp import web
     except ImportError:
-        logging.warning("[Server] aiohttp not installed â€” server disabled.")
+        logging.warning("[Server] aiohttp not installed — server disabled.")
         return
 
     async def handle_options(request: web.Request) -> web.Response:
@@ -3325,7 +3325,27 @@ async def start_vote_webhook():
             "Access-Control-Allow-Headers": "Authorization,Content-Type",
         })
 
-    # â”€â”€ VOTE WEBHOOK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── CORS middleware — runs on EVERY request ───────────────────────────
+    @web.middleware
+    async def cors_middleware(request: web.Request, handler):
+        # Handle preflight immediately
+        if request.method == "OPTIONS":
+            return web.Response(status=204, headers={
+                "Access-Control-Allow-Origin":  "*",
+                "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+                "Access-Control-Allow-Headers": "Authorization,Content-Type",
+                "Access-Control-Max-Age":       "86400",
+            })
+        try:
+            response = await handler(request)
+        except web.HTTPException as ex:
+            response = ex
+        response.headers["Access-Control-Allow-Origin"]  = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization,Content-Type"
+        return response
+
+    # ── VOTE WEBHOOK ──────────────────────────────────────────────────────
     async def handle_vote(request: web.Request) -> web.Response:
         secret = cfg.get("topgg_webhook_secret", "")
         if secret and request.headers.get("Authorization") != secret:
@@ -3345,8 +3365,8 @@ async def start_vote_webhook():
             user_obj = await bot.fetch_user(uid)
             discount = cfg.get("vote_discount", 10)
             dm_embed = base_embed(
-                "ðŸ—³ï¸ Thanks for voting!",
-                f"Thank you for voting for **JoyCannot** on top.gg! ðŸŽ‰\n\n"
+                "🗳️ Thanks for voting!",
+                f"Thank you for voting for **JoyCannot** on top.gg! 🎉\n\n"
                 f"As a reward, you get **{discount}% off** your next premium order!\n"
                 f"Use `/premium order` within the next {VOTE_COOLDOWN_HOURS} hours.\n\n"
                 f"[Vote again in {VOTE_COOLDOWN_HOURS}h](https://top.gg/bot/{bot.user.id}/vote)",
@@ -3357,7 +3377,7 @@ async def start_vote_webhook():
             pass
         return web.Response(status=200, text="OK")
 
-    # â”€â”€ API: STATUS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: STATUS ───────────────────────────────────────────────────────
     async def api_status(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         return _json({
@@ -3370,7 +3390,7 @@ async def start_vote_webhook():
             "latency_ms":    round(bot.latency * 1000, 1),
         })
 
-    # â”€â”€ API: GUILDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: GUILDS ───────────────────────────────────────────────────────
     async def api_guilds(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         pg = set(cfg.get("premium_guilds", []))
@@ -3380,7 +3400,7 @@ async def start_vote_webhook():
             "members": g.member_count, "premium": g.id in pg,
         } for g in bot.guilds])
 
-    # â”€â”€ API: CONFIG GET/POST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: CONFIG GET/POST ──────────────────────────────────────────────
     async def api_config_get(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         return _json({k: v for k, v in cfg.items() if k != "guilds"})
@@ -3397,7 +3417,7 @@ async def start_vote_webhook():
         save_config(cfg)
         return _json({"ok": True})
 
-    # â”€â”€ API: PREMIUM GET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: PREMIUM GET ──────────────────────────────────────────────────
     async def api_premium_get(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         pg = cfg.get("premium_guilds", [])
@@ -3415,7 +3435,7 @@ async def start_vote_webhook():
             "avatar_premium":  cfg.get("avatar_premium", ""),
         })
 
-    # â”€â”€ API: PREMIUM PACKAGES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: PREMIUM PACKAGES ─────────────────────────────────────────────
     async def api_premium_packages(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3435,7 +3455,7 @@ async def start_vote_webhook():
             return _json({"ok": True, "packages": cfg["premium_packages"]})
         return _json({"error": "action: add or remove"}, 400)
 
-    # â”€â”€ API: PREMIUM GUILDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: PREMIUM GUILDS ───────────────────────────────────────────────
     async def api_premium_guilds(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3467,7 +3487,7 @@ async def start_vote_webhook():
             return _json({"ok": True, "premium_guilds": [str(x) for x in cfg["premium_guilds"]]})
         return _json({"error": "action: activate or deactivate"}, 400)
 
-    # â”€â”€ API: PREMIUM USERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: PREMIUM USERS ────────────────────────────────────────────────
     async def api_premium_users(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3489,7 +3509,7 @@ async def start_vote_webhook():
             return _json({"ok": True, "premium_users": [str(u) for u in cfg["premium_users"]]})
         return _json({"error": "action: add or remove"}, 400)
 
-    # â”€â”€ API: PREMIUM COMMANDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: PREMIUM COMMANDS ─────────────────────────────────────────────
     async def api_premium_commands(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3509,7 +3529,7 @@ async def start_vote_webhook():
             return _json({"ok": True, "premium_commands": cfg["premium_commands"]})
         return _json({"error": "action: lock or unlock"}, 400)
 
-    # â”€â”€ API: GUILD GET â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: GUILD GET ────────────────────────────────────────────────────
     async def api_guild_get(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3553,7 +3573,7 @@ async def start_vote_webhook():
             "active_tickets":len(gc.get("active_tickets",{})),
         })
 
-    # â”€â”€ API: GUILD POST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: GUILD POST ───────────────────────────────────────────────────
     async def api_guild_post(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3585,7 +3605,7 @@ async def start_vote_webhook():
         save_config(cfg)
         return _json({"ok": True})
 
-    # â”€â”€ API: GUILD QUEST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: GUILD QUEST ─────────────────────────────────────────────────
     async def api_guild_quest(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3619,7 +3639,7 @@ async def start_vote_webhook():
             return _json({"ok": True, "quests": gc["quests"]})
         return _json({"error": "action: create/delete/toggle"}, 400)
 
-    # â”€â”€ API: GUILD GIVEAWAYS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: GUILD GIVEAWAYS ──────────────────────────────────────────────
     async def api_guild_giveaways(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3631,7 +3651,7 @@ async def start_vote_webhook():
                for gw in active_giveaways.values() if gw.get("guild_id") == gid]
         return _json(gws)
 
-    # â”€â”€ API: GIVEAWAY END â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: GIVEAWAY END ─────────────────────────────────────────────────
     async def api_giveaway_end(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3643,7 +3663,7 @@ async def start_vote_webhook():
         asyncio.create_task(end_giveaway(gw))
         return _json({"ok": True})
 
-    # â”€â”€ API: BROADCAST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── API: BROADCAST ────────────────────────────────────────────────────
     async def api_broadcast(request: web.Request) -> web.Response:
         if not _api_auth(request): return _json({"error": "Unauthorized"}, 401)
         try:
@@ -3652,8 +3672,8 @@ async def start_vote_webhook():
             return _json({"error": "Invalid JSON"}, 400)
         message = body.get("message","")
         if not message: return _json({"error": "message required"}, 400)
-        title = body.get("title","ðŸ“¢ Announcement")
-        embed = base_embed(f"ðŸ“¢ {title}", message, color=0xF59E0B)
+        title = body.get("title","📢 Announcement")
+        embed = base_embed(f"📢 {title}", message, color=0xF59E0B)
         ok = fail = 0
         for guild in bot.guilds:
             gc  = guild_cfg(cfg, guild.id)
@@ -3672,8 +3692,8 @@ async def start_vote_webhook():
             await asyncio.sleep(0.3)
         return _json({"ok": True, "success": ok, "failed": fail})
 
-    # â”€â”€ Register routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    app = web.Application()
+    # ── Register routes ───────────────────────────────────────────────────
+    app = web.Application(middlewares=[cors_middleware])
     app.router.add_post("/topgg/vote",                handle_vote)
     app.router.add_route("OPTIONS", "/{path_info:.*}", handle_options)
     app.router.add_get( "/api/status",                api_status)
@@ -3724,30 +3744,30 @@ async def slash_vote(i: discord.Interaction):
 
     if user_discount > 0:
         desc = (
-            f"âœ… You **already voted** and have an active **{user_discount}% discount**!\n\n"
+            f"✅ You **already voted** and have an active **{user_discount}% discount**!\n\n"
             f"Use `/premium order` now to claim it.\n"
             f"[Vote again when cooldown expires]({vote_url})"
         )
         color = 0x22C55E
     else:
         desc = (
-            f"ðŸ—³ï¸ **Vote for JoyCannot** on top.gg and get **{discount}% off** premium!\n\n"
-            f"[ðŸ‘‰ Click here to vote]({vote_url})\n\n"
+            f"🗳️ **Vote for JoyCannot** on top.gg and get **{discount}% off** premium!\n\n"
+            f"[👉 Click here to vote]({vote_url})\n\n"
             f"After voting, use `/premium order` within {VOTE_COOLDOWN_HOURS} hours to apply the discount."
         )
         color = 0xF59E0B
 
-    embed = base_embed("ðŸ—³ï¸ Vote for JoyCannot", desc, color=color)
+    embed = base_embed("🗳️ Vote for JoyCannot", desc, color=color)
     view  = discord.ui.View()
-    view.add_item(discord.ui.Button(label="Vote on top.gg", url=vote_url, style=discord.ButtonStyle.link, emoji="ðŸ—³ï¸"))
+    view.add_item(discord.ui.Button(label="Vote on top.gg", url=vote_url, style=discord.ButtonStyle.link, emoji="🗳️"))
     await i.response.send_message(embed=embed, view=view)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  LEVELING SLASH COMMANDS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 xp_group = app_commands.Group(name="xp", description="Manage XP and levels for server members.")
 
@@ -3768,7 +3788,7 @@ async def slash_xp_add(i: discord.Interaction, member: discord.Member, amount: i
     embed.add_field(name="Total XP", value=str(data["xp"]), inline=True)
     embed.add_field(name="Level",    value=str(data["level"]), inline=True)
     if data["level"] > old_level:
-        embed.add_field(name="â¬†ï¸", value=f"Leveled up to **{data['level']}**!", inline=True)
+        embed.add_field(name="⬆️", value=f"Leveled up to **{data['level']}**!", inline=True)
     await i.response.send_message(embed=embed)
 
 @xp_group.command(name="remove", description="Remove XP from a member. Admin only.")
@@ -3804,7 +3824,7 @@ async def slash_xp_set(i: discord.Interaction, member: discord.Member, amount: i
         f"Set {member.mention}'s XP to **{amount}** (Level **{data['level']}**)."))
 
 @xp_group.command(name="setlevel", description="Set a member's level directly. Admin only.")
-@app_commands.describe(member="Target member", level="New level (0â€“999)")
+@app_commands.describe(member="Target member", level="New level (0–999)")
 async def slash_xp_setlevel(i: discord.Interaction, member: discord.Member, level: int):
     if not i.user.guild_permissions.manage_guild:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
@@ -3833,7 +3853,7 @@ async def slash_xp_reset(i: discord.Interaction, member: discord.Member):
 bot.tree.add_command(xp_group)
 
 
-# â”€â”€ Level commands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Level commands ────────────────────────────
 
 level_group = app_commands.Group(name="level", description="Leveling system configuration and stats.")
 
@@ -3849,7 +3869,7 @@ async def slash_level_rank(i: discord.Interaction, member: Optional[discord.Memb
     rank = next((idx + 1 for idx, (uid, _) in enumerate(all_members) if uid == str(target.id)), "?")
 
     pct = int((cx / max(nx, 1)) * 100)
-    bar = "â–°" * int(pct / 100 * 16) + "â–±" * (16 - int(pct / 100 * 16))
+    bar = "▰" * int(pct / 100 * 16) + "▱" * (16 - int(pct / 100 * 16))
 
     bot_id   = bot.user.id if bot.user else ""
     vote_url = f"https://top.gg/bot/{bot_id}/vote"
@@ -3857,26 +3877,26 @@ async def slash_level_rank(i: discord.Interaction, member: Optional[discord.Memb
     embed = discord.Embed(
         description=(
             f"**@{target.display_name}**\n"
-            f"â €\n"
-            f"**Level: {lvl}** â €Â·â € "
-            f"**XP: {cx:,} / {nx:,}** â €Â·â € "
+            f"⠀\n"
+            f"**Level: {lvl}** ⠀·⠀ "
+            f"**XP: {cx:,} / {nx:,}** ⠀·⠀ "
             f"**Rank: #{rank}**\n"
-            f"â €\n"
+            f"⠀\n"
             f"`{bar}` {pct}%\n"
-            f"â €\n"
-            f"*Total XP: {data['xp']:,} â €Â·â € Messages: {data.get('messages',0):,}*"
+            f"⠀\n"
+            f"*Total XP: {data['xp']:,} ⠀·⠀ Messages: {data.get('messages',0):,}*"
         ),
         color=0x1DB954,
         timestamp=discord.utils.utcnow()
     )
-    embed.set_author(name=f"ðŸ“Š Rank Card", icon_url=target.display_avatar.url)
+    embed.set_author(name=f"📊 Rank Card", icon_url=target.display_avatar.url)
     embed.set_thumbnail(url=target.display_avatar.url)
     embed.set_footer(
         text=f"Vote Booster: Vote now for a 10% XP boost.  top.gg/bot/{bot_id}/vote",
     )
 
     view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="ðŸ—³ï¸ Vote for XP boost", url=vote_url, style=discord.ButtonStyle.link))
+    view.add_item(discord.ui.Button(label="🗳️ Vote for XP boost", url=vote_url, style=discord.ButtonStyle.link))
     await i.response.send_message(embed=embed, view=view)
 
 @level_group.command(name="leaderboard", description="Show the top 10 members by XP in this server.")
@@ -3885,24 +3905,24 @@ async def slash_level_leaderboard(i: discord.Interaction):
     all_data = sorted(gc["members_xp"].items(), key=lambda x: x[1].get("xp", 0), reverse=True)[:10]
 
     if not all_data:
-        return await i.response.send_message(embed=info_embed("ðŸ“Š Leaderboard", "No XP data yet. Start chatting!"))
+        return await i.response.send_message(embed=info_embed("📊 Leaderboard", "No XP data yet. Start chatting!"))
 
     embed = discord.Embed(
-        title="ðŸ† XP Leaderboard",
+        title="🏆 XP Leaderboard",
         color=EMBED_COLOR,
         timestamp=discord.utils.utcnow()
     )
-    medals = ["ðŸ¥‡", "ðŸ¥ˆ", "ðŸ¥‰"] + ["ðŸ”¸"] * 7
+    medals = ["🥇", "🥈", "🥉"] + ["🔸"] * 7
     lines  = []
     for idx, (uid, data) in enumerate(all_data):
         member = i.guild.get_member(int(uid))
         name   = member.display_name if member else f"User {uid[:6]}"
         lvl    = data.get("level", 0)
         xp     = data.get("xp", 0)
-        lines.append(f"{medals[idx]} **{idx+1}.** {name} â€” Lv.**{lvl}** Â· {xp:,} XP")
+        lines.append(f"{medals[idx]} **{idx+1}.** {name} — Lv.**{lvl}** · {xp:,} XP")
 
     embed.description = "\n".join(lines)
-    embed.set_footer(text=f"JoyCannot Leveling â€¢ {len(gc['members_xp'])} members tracked")
+    embed.set_footer(text=f"JoyCannot Leveling • {len(gc['members_xp'])} members tracked")
     await i.response.send_message(embed=embed)
 
 @level_group.command(name="setchannel", description="Set the channel for level-up notifications. Requires Manage Server.")
@@ -3919,13 +3939,13 @@ async def slash_level_setchannel(i: discord.Interaction, channel: Optional[disco
         await i.response.send_message(embed=success_embed("Level-up notifications disabled."))
 
 @level_group.command(name="setxp", description="Configure XP gained per message. Requires Manage Server.")
-@app_commands.describe(min_xp="Minimum XP per message (1â€“100)", max_xp="Maximum XP per message (1â€“100)",
-                       cooldown="Cooldown in seconds between XP gains (10â€“300)")
+@app_commands.describe(min_xp="Minimum XP per message (1–100)", max_xp="Maximum XP per message (1–100)",
+                       cooldown="Cooldown in seconds between XP gains (10–300)")
 async def slash_level_setxp(i: discord.Interaction, min_xp: int = 15, max_xp: int = 25, cooldown: int = 60):
     if not i.user.guild_permissions.manage_guild:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
     if not (1 <= min_xp <= max_xp <= 100):
-        return await i.response.send_message(embed=error_embed("Invalid range. min must be â‰¤ max, both between 1â€“100."), ephemeral=True)
+        return await i.response.send_message(embed=error_embed("Invalid range. min must be ≤ max, both between 1–100."), ephemeral=True)
     if not (10 <= cooldown <= 300):
         return await i.response.send_message(embed=error_embed("Cooldown must be between 10 and 300 seconds."), ephemeral=True)
     gc = guild_cfg(cfg, i.guild.id)
@@ -3933,7 +3953,7 @@ async def slash_level_setxp(i: discord.Interaction, min_xp: int = 15, max_xp: in
     gc["xp_cooldown"]    = cooldown
     save_config(cfg)
     await i.response.send_message(embed=success_embed(
-        f"XP per message set to **{min_xp}â€“{max_xp}**.\nCooldown: **{cooldown}s**."))
+        f"XP per message set to **{min_xp}–{max_xp}**.\nCooldown: **{cooldown}s**."))
 
 @level_group.command(name="setrole", description="Set a role reward for reaching a specific level. Requires Manage Server.")
 @app_commands.describe(level="Level required to earn the role", role="Role to award (leave blank to remove)")
@@ -3957,17 +3977,17 @@ async def slash_level_toggle(i: discord.Interaction):
     gc = guild_cfg(cfg, i.guild.id)
     gc["leveling_enabled"] = not gc.get("leveling_enabled", True)
     save_config(cfg)
-    state = "enabled âœ…" if gc["leveling_enabled"] else "disabled âŒ"
+    state = "enabled ✅" if gc["leveling_enabled"] else "disabled ❌"
     await i.response.send_message(embed=success_embed(f"Leveling system is now **{state}**."))
 
 bot.tree.add_command(level_group)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  QUEST SLASH COMMANDS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
 quest_group = app_commands.Group(name="quest", description="View and manage quests in this server.")
 
@@ -3977,10 +3997,10 @@ async def slash_quest_list(i: discord.Interaction):
     quests = [q for q in gc.get("quests", []) if q.get("active", True)]
     if not quests:
         return await i.response.send_message(embed=info_embed(
-            "ðŸ“‹ Quests", "No active quests right now.\nAsk an admin to create some with `/quest create`!"))
+            "📋 Quests", "No active quests right now.\nAsk an admin to create some with `/quest create`!"))
 
     uid = str(i.user.id)
-    embed = discord.Embed(title="ðŸ“‹ Active Quests", color=EMBED_COLOR, timestamp=discord.utils.utcnow())
+    embed = discord.Embed(title="📋 Active Quests", color=EMBED_COLOR, timestamp=discord.utils.utcnow())
 
     for quest in quests[:10]:
         qid      = quest["id"]
@@ -3989,26 +4009,26 @@ async def slash_quest_list(i: discord.Interaction):
         done     = progress >= target
         bar      = make_xp_bar(min(progress, target), target, length=8)
 
-        # â”€â”€ Hide reward until quest is completed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Hide reward until quest is completed ──────────────────────────
         if done:
             rewards = []
             if quest.get("reward_xp"):   rewards.append(f"+{quest['reward_xp']} XP")
             if quest.get("reward_text"): rewards.append(quest["reward_text"])
-            reward_str = " Â· ".join(rewards) or "None"
+            reward_str = " · ".join(rewards) or "None"
         else:
-            reward_str = "ðŸ”’ *Complete quest to reveal*"
+            reward_str = "🔒 *Complete quest to reveal*"
 
         embed.add_field(
-            name=f"{'âœ…' if done else 'ðŸ”¶'} {quest['name']}",
+            name=f"{'✅' if done else '🔶'} {quest['name']}",
             value=(
                 f"{quest.get('description','')}\n"
                 f"{bar} `{min(progress,target)}/{target}`\n"
-                f"ðŸŽ **Reward:** {reward_str}"
+                f"🎁 **Reward:** {reward_str}"
             ),
             inline=False
         )
 
-    embed.set_footer(text=f"JoyCannot Quest System â€¢ {len(quests)} active quest(s)")
+    embed.set_footer(text=f"JoyCannot Quest System • {len(quests)} active quest(s)")
     await i.response.send_message(embed=embed)
 
 @quest_group.command(name="create", description="Create a new quest for this server. Requires Manage Server.")
@@ -4056,14 +4076,14 @@ async def slash_quest_create(
     gc["quests"].append(quest)
     save_config(cfg)
 
-    embed = base_embed("âœ… Quest Created!", None, color=0x22C55E)
-    embed.add_field(name="ðŸ“‹ Name",        value=name,                                    inline=True)
-    embed.add_field(name="ðŸŽ¯ Type",        value=QUEST_TYPES.get(quest_type,"?").format(target=target), inline=True)
-    embed.add_field(name="ðŸ”¢ Target",      value=str(target),                             inline=True)
+    embed = base_embed("✅ Quest Created!", None, color=0x22C55E)
+    embed.add_field(name="📋 Name",        value=name,                                    inline=True)
+    embed.add_field(name="🎯 Type",        value=QUEST_TYPES.get(quest_type,"?").format(target=target), inline=True)
+    embed.add_field(name="🔢 Target",      value=str(target),                             inline=True)
     if reward_xp:
-        embed.add_field(name="â­ XP Reward",  value=f"+{reward_xp} XP",                  inline=True)
+        embed.add_field(name="⭐ XP Reward",  value=f"+{reward_xp} XP",                  inline=True)
     if reward_text:
-        embed.add_field(name="ðŸŽ Reward",     value=reward_text,                          inline=True)
+        embed.add_field(name="🎁 Reward",     value=reward_text,                          inline=True)
     await i.response.send_message(embed=embed)
 
 @quest_group.command(name="delete", description="Delete a quest by name. Requires Manage Server.")
@@ -4089,7 +4109,7 @@ async def slash_quest_toggle(i: discord.Interaction, name: str):
         if quest["name"].lower() == name.lower():
             quest["active"] = not quest.get("active", True)
             save_config(cfg)
-            state = "enabled âœ…" if quest["active"] else "disabled âŒ"
+            state = "enabled ✅" if quest["active"] else "disabled ❌"
             return await i.response.send_message(embed=success_embed(f"Quest **{name}** is now {state}."))
     await i.response.send_message(embed=error_embed(f"Quest `{name}` not found."), ephemeral=True)
 
@@ -4115,7 +4135,7 @@ async def slash_quest_setchannel(i: discord.Interaction, channel: Optional[disco
         # Post current quest list to the channel as a pinned reference
         quests = [q for q in gc.get("quests", []) if q.get("active", True)]
         info_em = discord.Embed(
-            title="ðŸ“‹ Quest Channel",
+            title="📋 Quest Channel",
             description=(
                 f"Quest channel telah diset ke {channel.mention}!\n"
                 f"Notifikasi penyelesaian quest dan claim reward akan muncul di sini."
@@ -4124,8 +4144,8 @@ async def slash_quest_setchannel(i: discord.Interaction, channel: Optional[disco
         )
         if quests:
             info_em.add_field(
-                name=f"ðŸ“Œ Active Quests ({len(quests)})",
-                value="\n".join(f"ðŸ”¶ **{q['name']}** â€” {q.get('description','')}" for q in quests[:5]),
+                name=f"📌 Active Quests ({len(quests)})",
+                value="\n".join(f"🔶 **{q['name']}** — {q.get('description','')}" for q in quests[:5]),
                 inline=False
             )
         await i.response.send_message(embed=info_em)
@@ -4135,28 +4155,28 @@ async def slash_quest_setchannel(i: discord.Interaction, channel: Optional[disco
 bot.tree.add_command(quest_group)
 
 
-# â”€â”€ /rank shortcut â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── /rank shortcut ────────────────────────────
 @bot.tree.command(name="rank", description="View your XP rank and progress in this server.")
 @app_commands.describe(member="Member to check (leave blank = yourself)")
 async def slash_rank(i: discord.Interaction, member: Optional[discord.Member] = None):
     await slash_level_rank.callback(i, member=member)
 
-# â”€â”€ /leaderboard shortcut â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── /leaderboard shortcut ─────────────────────
 @bot.tree.command(name="leaderboard", description="Show the top 10 members by XP in this server.")
 async def slash_leaderboard(i: discord.Interaction):
     await slash_level_leaderboard.callback(i)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ─────────────────────────────────────────────
+# ══════════════════════════════════════════
 #  GIVEAWAY SYSTEM
-#  /giveaway start  â†’ create & schedule giveaway
-#  /giveaway end    â†’ force end early
-#  /giveaway reroll â†’ reroll winner(s)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  /giveaway start  → create & schedule giveaway
+#  /giveaway end    → force end early
+#  /giveaway reroll → reroll winner(s)
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
 
-# active_giveaways: message_id â†’ giveaway data dict
+# active_giveaways: message_id → giveaway data dict
 active_giveaways: dict[int, dict] = {}
 
 
@@ -4169,26 +4189,26 @@ def build_giveaway_embed(gw: dict, ended: bool = False) -> discord.Embed:
         winners = gw.get("winners", [])
         if winners:
             winner_str  = " ".join(f"<@{w}>" for w in winners)
-            result_line = f"ðŸ† **Winner{'s' if len(winners) > 1 else ''}:** {winner_str}"
+            result_line = f"🏆 **Winner{'s' if len(winners) > 1 else ''}:** {winner_str}"
         else:
-            result_line = "ðŸ˜” **No valid entries â€” no winner.**"
+            result_line = "😔 **No valid entries — no winner.**"
         desc = (
             f"**{gw['prize']}**\n"
             + (f"\n{gw['description']}\n" if gw.get("description") else "")
             + f"\n{result_line}\n\n"
-            f"ðŸ Giveaway has ended."
+            f"🏁 Giveaway has ended."
         )
     else:
         desc = (
             f"**{gw['prize']}**\n"
             + (f"\n{gw['description']}\n" if gw.get("description") else "")
-            + f"\nReact with ðŸŽ‰ to enter!\n\n"
-            f"â° **Ends:** {discord.utils.format_dt(ends_dt, 'R')}\n"
-            f"ðŸ‘¥ **Winners:** {gw['winner_count']}"
+            + f"\nReact with 🎉 to enter!\n\n"
+            f"⏰ **Ends:** {discord.utils.format_dt(ends_dt, 'R')}\n"
+            f"👥 **Winners:** {gw['winner_count']}"
         )
 
     embed = discord.Embed(
-        title="ðŸŽŠ GIVEAWAY ðŸŽŠ" if not ended else "ðŸŽŠ GIVEAWAY ENDED",
+        title="🎊 GIVEAWAY 🎊" if not ended else "🎊 GIVEAWAY ENDED",
         description=desc,
         color=color,
         timestamp=discord.utils.utcnow()
@@ -4196,23 +4216,23 @@ def build_giveaway_embed(gw: dict, ended: bool = False) -> discord.Embed:
 
     # Host
     if gw.get("host_id"):
-        embed.add_field(name="ðŸŽ—ï¸ Hosted by", value=f"<@{gw['host_id']}>",  inline=True)
+        embed.add_field(name="🎗️ Hosted by", value=f"<@{gw['host_id']}>",  inline=True)
 
-    embed.add_field(name="ðŸ… Winners",      value=str(gw["winner_count"]),   inline=True)
+    embed.add_field(name="🏅 Winners",      value=str(gw["winner_count"]),   inline=True)
 
     if not ended:
-        embed.add_field(name="ðŸŽŸï¸ Entries",  value=str(len(gw.get("entries", []))), inline=True)
+        embed.add_field(name="🎟️ Entries",  value=str(len(gw.get("entries", []))), inline=True)
 
     # Requirements
     reqs = []
     if gw.get("required_role"):
-        reqs.append(f"ðŸŽ­ Role: <@&{gw['required_role']}>")
+        reqs.append(f"🎭 Role: <@&{gw['required_role']}>")
     if gw.get("min_level", 0) > 0:
-        reqs.append(f"â­ Min Level: **{gw['min_level']}**")
+        reqs.append(f"⭐ Min Level: **{gw['min_level']}**")
     if reqs:
-        embed.add_field(name="ðŸ“‹ Requirements", value="\n".join(reqs), inline=False)
+        embed.add_field(name="📋 Requirements", value="\n".join(reqs), inline=False)
 
-    embed.set_footer(text="JoyCannot Giveaway System â€¢ React ðŸŽ‰ to enter!")
+    embed.set_footer(text="JoyCannot Giveaway System • React 🎉 to enter!")
     return embed
 
 
@@ -4234,13 +4254,13 @@ async def end_giveaway(gw: dict):
 
     try:
         msg = await channel.fetch_message(gw["message_id"])
-        # Collect entries from ðŸŽ‰ reactions, validate requirements
+        # Collect entries from 🎉 reactions, validate requirements
         req_role_id = gw.get("required_role")
         min_level   = gw.get("min_level", 0)
         gc          = guild_cfg(cfg, gw["guild_id"]) if gw.get("guild_id") else {}
 
         for reaction in msg.reactions:
-            if str(reaction.emoji) == "ðŸŽ‰":
+            if str(reaction.emoji) == "🎉":
                 async for user in reaction.users():
                     if user.bot or user.id in gw["entries"]:
                         continue
@@ -4251,12 +4271,12 @@ async def end_giveaway(gw: dict):
                     if req_role_id:
                         role = channel.guild.get_role(req_role_id)
                         if role and role not in member.roles:
-                            continue  # Doesn't have required role â€” skip
+                            continue  # Doesn't have required role — skip
                     # Check min level
                     if min_level > 0:
                         xp_data = gc.get("members_xp", {}).get(str(user.id), {})
                         if xp_data.get("level", 0) < min_level:
-                            continue  # Level too low â€” skip
+                            continue  # Level too low — skip
                     gw["entries"].append(user.id)
                 break
     except (discord.NotFound, discord.Forbidden):
@@ -4273,15 +4293,15 @@ async def end_giveaway(gw: dict):
     except Exception:
         pass
 
-    # Announce winners â€” tag them in content for notification
+    # Announce winners — tag them in content for notification
     if winners:
         winner_str = " ".join(f"<@{w}>" for w in winners)
         win_embed  = discord.Embed(
-            title="ðŸ† Giveaway Winners!",
+            title="🏆 Giveaway Winners!",
             description=(
                 f"Selamat kepada {winner_str}!\n\n"
-                f"ðŸŽ **Prize:** {gw['prize']}\n"
-                f"ðŸ”— [Jump to Giveaway](https://discord.com/channels/{channel.guild.id}/{channel.id}/{msg.id})"
+                f"🎁 **Prize:** {gw['prize']}\n"
+                f"🔗 [Jump to Giveaway](https://discord.com/channels/{channel.guild.id}/{channel.id}/{msg.id})"
             ),
             color=0x22C55E,
             timestamp=discord.utils.utcnow()
@@ -4293,7 +4313,7 @@ async def end_giveaway(gw: dict):
             pass
     else:
         try:
-            await channel.send(embed=info_embed("ðŸŽŠ Giveaway Ended", f"No valid entries for **{gw['prize']}**."))
+            await channel.send(embed=info_embed("🎊 Giveaway Ended", f"No valid entries for **{gw['prize']}**."))
         except Exception:
             pass
 
@@ -4307,7 +4327,7 @@ giveaway_group = app_commands.Group(name="giveaway", description="Create and man
 @app_commands.describe(
     prize="What you're giving away (e.g. 'Steam Gift Card $10', 'Premium 1 month')",
     duration="Duration: e.g. 1h, 30m, 2h30m, 1d",
-    winners="Number of winners (1â€“20, default: 1)",
+    winners="Number of winners (1–20, default: 1)",
     description="Optional description or extra info about the prize",
     required_role="Only members with this role can enter (leave blank = everyone)",
     min_level="Minimum XP level required to enter (0 = no requirement)",
@@ -4369,7 +4389,7 @@ async def slash_giveaway_start(
     embed = build_giveaway_embed(gw)
     try:
         msg = await target_ch.send(embed=embed)
-        await msg.add_reaction("ðŸŽ‰")
+        await msg.add_reaction("🎉")
     except discord.Forbidden:
         return await i.response.send_message(
             embed=error_embed(f"I can't send messages in {target_ch.mention}."), ephemeral=True)
@@ -4389,17 +4409,17 @@ async def slash_giveaway_start(
 
     # Build confirmation embed
     confirm = success_embed(
-        f"ðŸŽŠ Giveaway started in {target_ch.mention}!\n\n"
-        f"ðŸŽ **Prize:** {prize}\n"
-        f"ðŸ… **Winners:** {winners}\n"
-        f"â° **Ends:** {discord.utils.format_dt(ends_dt, 'R')}"
+        f"🎊 Giveaway started in {target_ch.mention}!\n\n"
+        f"🎁 **Prize:** {prize}\n"
+        f"🏅 **Winners:** {winners}\n"
+        f"⏰ **Ends:** {discord.utils.format_dt(ends_dt, 'R')}"
     )
     if description:
-        confirm.add_field(name="ðŸ“ Description", value=description, inline=False)
+        confirm.add_field(name="📝 Description", value=description, inline=False)
     if required_role:
-        confirm.add_field(name="ðŸŽ­ Required Role", value=required_role.mention, inline=True)
+        confirm.add_field(name="🎭 Required Role", value=required_role.mention, inline=True)
     if min_level > 0:
-        confirm.add_field(name="â­ Min Level",    value=str(min_level),         inline=True)
+        confirm.add_field(name="⭐ Min Level",    value=str(min_level),         inline=True)
     await i.response.send_message(embed=confirm, ephemeral=True)
 
 
@@ -4420,7 +4440,7 @@ async def slash_giveaway_end(i: discord.Interaction, message_id: str):
     if gw["guild_id"] != i.guild.id:
         return await i.response.send_message(embed=error_embed("That giveaway is not in this server."), ephemeral=True)
 
-    await i.response.send_message(embed=info_embed("â© Ending giveaway...", f"Force-ending **{gw['prize']}**."))
+    await i.response.send_message(embed=info_embed("⏩ Ending giveaway...", f"Force-ending **{gw['prize']}**."))
     await end_giveaway(gw)
 
 
@@ -4445,7 +4465,7 @@ async def slash_giveaway_reroll(i: discord.Interaction, message_id: str, count: 
 
     entries = []
     for reaction in msg.reactions:
-        if str(reaction.emoji) == "ðŸŽ‰":
+        if str(reaction.emoji) == "🎉":
             async for user in reaction.users():
                 if not user.bot:
                     entries.append(user.id)
@@ -4459,10 +4479,10 @@ async def slash_giveaway_reroll(i: discord.Interaction, message_id: str, count: 
     winner_str = " ".join(f"<@{w}>" for w in winners)
 
     embed = discord.Embed(
-        title="ðŸ” Giveaway Rerolled!",
+        title="🔁 Giveaway Rerolled!",
         description=(
             f"New winner{'s' if count > 1 else ''}: {winner_str}\n\n"
-            f"ðŸ”— [Jump to Giveaway](https://discord.com/channels/{i.guild.id}/{i.channel.id}/{mid})"
+            f"🔗 [Jump to Giveaway](https://discord.com/channels/{i.guild.id}/{i.channel.id}/{mid})"
         ),
         color=0xF59E0B,
         timestamp=discord.utils.utcnow()
@@ -4475,24 +4495,24 @@ async def slash_giveaway_reroll(i: discord.Interaction, message_id: str, count: 
 async def slash_giveaway_list(i: discord.Interaction):
     guild_gws = [gw for gw in active_giveaways.values() if gw.get("guild_id") == i.guild.id]
     if not guild_gws:
-        return await i.response.send_message(embed=info_embed("ðŸŽŠ Giveaways", "No active giveaways right now."))
+        return await i.response.send_message(embed=info_embed("🎊 Giveaways", "No active giveaways right now."))
 
-    embed = discord.Embed(title="ðŸŽŠ Active Giveaways", color=EMBED_COLOR, timestamp=discord.utils.utcnow())
+    embed = discord.Embed(title="🎊 Active Giveaways", color=EMBED_COLOR, timestamp=discord.utils.utcnow())
     for gw in guild_gws[:10]:
         ends_dt = datetime.datetime.utcfromtimestamp(gw["ends_ts"]).replace(tzinfo=datetime.timezone.utc)
         ch      = bot.get_channel(gw["channel_id"])
         embed.add_field(
-            name=f"ðŸŽ {gw['prize']}",
+            name=f"🎁 {gw['prize']}",
             value=(
                 f"**Channel:** {ch.mention if ch else 'unknown'}\n"
                 f"**Ends:** {discord.utils.format_dt(ends_dt, 'R')}\n"
-                f"**Winners:** {gw['winner_count']} â €Â·â € "
+                f"**Winners:** {gw['winner_count']} ⠀·⠀ "
                 f"**Entries:** {len(gw['entries'])}\n"
                 f"**ID:** `{gw['message_id']}`"
             ),
             inline=False
         )
-    embed.set_footer(text=f"JoyCannot Giveaway System â€¢ {len(guild_gws)} active")
+    embed.set_footer(text=f"JoyCannot Giveaway System • {len(guild_gws)} active")
     await i.response.send_message(embed=embed)
 
 
