@@ -4560,7 +4560,7 @@ def save_topup(data: dict):
     cfg["topup"] = data
     save_config(cfg)
 
-def build_topup_embed() -> tuple[discord.Embed, discord.ui.View | None]:
+def build_topup_embed():
     """Buat embed + button topup. Return (embed, view)."""
     d     = get_topup_data()
     color = d.get("color", 0xD97706)
