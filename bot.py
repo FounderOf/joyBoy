@@ -918,10 +918,19 @@ async def on_message(message: discord.Message):
                 spam_cleanup_times[uid] = now
 
     # ── Prefix command routing ────────────────────────────────────────────
-    # Alias !j / !J → !Joy (prefix pendek)
+    # Normalize all prefix variants → "!Joy " so commands.Bot can match them.
+    # Supported aliases: !Joy, !joy, !JOY, !j, !J (case-insensitive)
     low = message.content.lower()
-    if low.startswith("!j ") and not low.startswith("!joy "):
+    if low.startswith("!joy "):
+        # Rewrite to canonical prefix (preserves args casing)
+        message.content = "!Joy " + message.content[5:]
+    elif low.startswith("!joy") and len(message.content) == 4:
+        # bare "!joy" with no args
+        message.content = "!Joy " + message.content[4:]
+    elif low.startswith("!j "):
         message.content = "!Joy " + message.content[3:]
+    elif low == "!j":
+        message.content = "!Joy "
     await bot.process_commands(message)
 
     # ── XP + Quest gain ──────────────────────────────────────────────────
@@ -1441,7 +1450,8 @@ async def do_help(reply_fn):
         f"{lbl('quest list')} · {lbl('quest create')} · {lbl('quest delete')} · {lbl('quest toggle')}"
     ), inline=False)
     embed.add_field(name="🎊 Giveaway", value=(
-        f"{lbl('giveaway start')} · {lbl('giveaway end')} · {lbl('giveaway reroll')} · {lbl('giveaway list')}"
+        f"{lbl('giveaway start')} · {lbl('giveaway end')} · {lbl('giveaway reroll')} · {lbl('giveaway list')}\n"
+        f"Prefix: `!Joy giveaway start <durasi> <winners> <prize> [--winrole <id>]`"
     ), inline=False)
     embed.add_field(name="👑 Owner Only (prefix)", value=(
         "`!Joy maintenance` · `!Joy premium` · `!Joy setchannel`"
@@ -3238,6 +3248,601 @@ async def pfx_setchannel(ctx: commands.Context):
 
 
 # ─────────────────────────────────────────────
+# ══════════════════════════════════════════
+#  PREFIX COMMANDS — semua fitur punya versi prefix
+#  Format: !Joy <nama_command> [args...]
+#  Alias:  !joy / !j juga diterima (via on_message)
+# ══════════════════════════════════════════
+# ─────────────────────────────────────────────
+
+# ── TICKET prefix ─────────────────────────────────────────────────────────────
+
+@bot.command(name="ticket")
+async def pfx_ticket(ctx: commands.Context, sub: str = "", *args):
+    """!Joy ticket setup | !Joy ticket panel | !Joy ticket close"""
+    sub = sub.lower()
+    gc  = guild_cfg(cfg, ctx.guild.id)
+
+    if sub == "setup":
+        # !Joy ticket setup <category_id> <log_channel_id> [support_role_id] [max_tickets]
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        if len(args) < 2:
+            return await ctx.send(embed=error_embed(
+                "Usage: `!Joy ticket setup <category_id> <log_channel_id> [support_role_id] [max_tickets]`"))
+        try:
+            cat_id = int(args[0])
+            log_id = int(args[1])
+            role_id = int(args[2]) if len(args) > 2 and args[2].isdigit() else None
+            max_t   = int(args[3]) if len(args) > 3 else (int(args[2]) if len(args) > 2 and not args[2].isdigit() else 1)
+        except (ValueError, IndexError):
+            return await ctx.send(embed=error_embed("ID harus berupa angka."))
+        category   = ctx.guild.get_channel(cat_id)
+        log_ch     = ctx.guild.get_channel(log_id)
+        support_r  = ctx.guild.get_role(role_id) if role_id else None
+        if not category or not log_ch:
+            return await ctx.send(embed=error_embed("Category atau log channel tidak ditemukan. Pastikan ID benar."))
+        gc["ticket"]["category"]     = cat_id
+        gc["ticket"]["log_channel"]  = log_id
+        gc["ticket"]["support_role"] = role_id
+        gc["ticket"]["max_tickets"]  = max(1, min(5, max_t))
+        save_config(cfg)
+        embed = base_embed("✅ Ticket System Configured", "Ticket system berhasil dikonfigurasi!")
+        embed.add_field(name="📁 Category",     value=category.name,                                           inline=True)
+        embed.add_field(name="📋 Log Channel",  value=log_ch.mention,                                          inline=True)
+        embed.add_field(name="🎭 Support Role", value=support_r.mention if support_r else "Anyone with Manage Channels", inline=True)
+        embed.add_field(name="🎫 Max Tickets",  value=f"{gc['ticket']['max_tickets']} per user",               inline=True)
+        await ctx.send(embed=embed)
+
+    elif sub == "panel":
+        # !Joy ticket panel [title] [description]
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        if not gc["ticket"].get("category"):
+            return await ctx.send(embed=error_embed("Jalankan `!Joy ticket setup` terlebih dahulu."))
+        title_txt = args[0] if args else "🎫 Support Tickets"
+        desc_txt  = args[1] if len(args) > 1 else "Click the button below to open a support ticket."
+
+        class TicketPanelView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=None)
+            @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary, emoji="🎫", custom_id="joy_ticket_open")
+            async def open_ticket(self, interaction: discord.Interaction, _btn):
+                await handle_open_ticket(interaction)
+
+        panel_embed = base_embed(title_txt, desc_txt)
+        await ctx.send(embed=panel_embed, view=TicketPanelView())
+        gc["ticket"]["panels"].append({"channel_id": ctx.channel.id, "title": title_txt})
+        save_config(cfg)
+
+    elif sub == "close":
+        # !Joy ticket close
+        for uid, ch_id in list(gc["active_tickets"].items()):
+            if ch_id == ctx.channel.id:
+                if not (ctx.author.guild_permissions.manage_channels or str(ctx.author.id) == uid):
+                    return await ctx.send(embed=error_embed("Kamu tidak bisa menutup ticket ini."))
+                reason_txt = " ".join(args) if args else "Closed via prefix command."
+                close_embed = base_embed("🔒 Ticket Closing",
+                    f"Ticket ditutup oleh {ctx.author.mention}.\n**Alasan:** {reason_txt}\n\nChannel dihapus dalam **5 detik**.",
+                    color=0xEF4444)
+                await ctx.send(embed=close_embed)
+                log_id = gc["ticket"].get("log_channel")
+                if log_id:
+                    log_ch = ctx.guild.get_channel(log_id)
+                    if log_ch:
+                        log_embed = base_embed("📋 Ticket Closed", None, color=0xEF4444)
+                        log_embed.add_field(name="🎫 Channel",   value=ctx.channel.name,  inline=True)
+                        log_embed.add_field(name="🔒 Closed by", value=ctx.author.mention, inline=True)
+                        log_embed.add_field(name="📝 Reason",    value=reason_txt,         inline=False)
+                        try:
+                            await log_ch.send(embed=log_embed)
+                        except Exception:
+                            pass
+                del gc["active_tickets"][uid]
+                save_config(cfg)
+                await asyncio.sleep(5)
+                try:
+                    await ctx.channel.delete(reason="Ticket closed via prefix")
+                except Exception:
+                    pass
+                return
+        await ctx.send(embed=error_embed("Channel ini bukan ticket."))
+    else:
+        await ctx.send(embed=info_embed("🎫 Ticket",
+            "Usage:\n"
+            "`!Joy ticket setup <cat_id> <log_id> [role_id] [max]`\n"
+            "`!Joy ticket panel [title] [description]`\n"
+            "`!Joy ticket close [reason]`"))
+
+# ── RANK & LEADERBOARD prefix ─────────────────────────────────────────────────
+
+@bot.command(name="rank")
+async def pfx_rank(ctx: commands.Context, member: discord.Member = None):
+    target = member or ctx.author
+    gc     = guild_cfg(cfg, ctx.guild.id)
+    data   = get_member_xp(gc, str(target.id))
+    lvl, cx, nx = xp_progress(data["xp"])
+    all_members = sorted(gc["members_xp"].items(), key=lambda x: x[1].get("xp", 0), reverse=True)
+    rank = next((idx + 1 for idx, (uid, _) in enumerate(all_members) if uid == str(target.id)), "?")
+    pct  = int((cx / max(nx, 1)) * 100)
+    bar  = "▰" * int(pct / 100 * 16) + "▱" * (16 - int(pct / 100 * 16))
+    bot_id   = bot.user.id if bot.user else ""
+    vote_url = f"https://top.gg/bot/{bot_id}/vote"
+    embed = discord.Embed(
+        description=(
+            f"**@{target.display_name}**\n⠀\n"
+            f"**Level: {lvl}** ⠀·⠀ **XP: {cx:,} / {nx:,}** ⠀·⠀ **Rank: #{rank}**\n⠀\n"
+            f"`{bar}` {pct}%\n⠀\n"
+            f"*Total XP: {data['xp']:,} ⠀·⠀ Messages: {data.get('messages',0):,}*"
+        ),
+        color=0x1DB954, timestamp=discord.utils.utcnow()
+    )
+    embed.set_author(name="📊 Rank Card", icon_url=target.display_avatar.url)
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.set_footer(text=f"Vote Booster: Vote now for a 10% XP boost.  top.gg/bot/{bot_id}/vote")
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="🗳️ Vote for XP boost", url=vote_url, style=discord.ButtonStyle.link))
+    await ctx.send(embed=embed, view=view)
+
+@bot.command(name="leaderboard")
+async def pfx_leaderboard(ctx: commands.Context):
+    gc       = guild_cfg(cfg, ctx.guild.id)
+    all_data = sorted(gc["members_xp"].items(), key=lambda x: x[1].get("xp", 0), reverse=True)[:10]
+    if not all_data:
+        return await ctx.send(embed=info_embed("📊 Leaderboard", "Belum ada data XP. Mulai ngobrol!"))
+    medals = ["🥇", "🥈", "🥉"]
+    lines  = []
+    for idx, (uid, data) in enumerate(all_data):
+        member = ctx.guild.get_member(int(uid))
+        name   = member.display_name if member else f"User ({uid[:6]})"
+        medal  = medals[idx] if idx < 3 else f"`#{idx+1}`"
+        lines.append(f"{medal} **{name}** — Level **{data.get('level',0)}** ⠀·⠀ {data.get('xp',0):,} XP")
+    embed = discord.Embed(title="🏆 XP Leaderboard", description="\n".join(lines),
+                          color=EMBED_COLOR, timestamp=discord.utils.utcnow())
+    embed.set_footer(text=f"JoyCannot Leveling System • {ctx.guild.name}")
+    await ctx.send(embed=embed)
+
+# ── LEVEL prefix ──────────────────────────────────────────────────────────────
+
+@bot.command(name="level")
+async def pfx_level(ctx: commands.Context, sub: str = "", *args):
+    """!Joy level rank | !Joy level leaderboard | !Joy level setchannel <channel_id>"""
+    sub = sub.lower()
+    gc  = guild_cfg(cfg, ctx.guild.id)
+
+    if sub == "rank":
+        member = None
+        if args:
+            try:
+                member = ctx.guild.get_member(int(args[0].strip("<@!>")))
+            except Exception:
+                pass
+        await pfx_rank.callback(pfx_rank, ctx, member)
+
+    elif sub == "leaderboard":
+        await pfx_leaderboard.callback(pfx_leaderboard, ctx)
+
+    elif sub == "setchannel":
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        if not args:
+            gc["level_channel"] = None
+            save_config(cfg)
+            return await ctx.send(embed=success_embed("Level channel dinonaktifkan."))
+        try:
+            ch_id = int(args[0])
+            ch    = ctx.guild.get_channel(ch_id)
+            if not ch:
+                return await ctx.send(embed=error_embed("Channel tidak ditemukan."))
+            gc["level_channel"] = ch_id
+            save_config(cfg)
+            await ctx.send(embed=success_embed(f"Level-up notifications akan dikirim ke {ch.mention}."))
+        except ValueError:
+            await ctx.send(embed=error_embed("Gunakan channel ID angka."))
+    else:
+        await ctx.send(embed=info_embed("⭐ Level",
+            "Usage:\n"
+            "`!Joy level rank [@member]` — lihat rank\n"
+            "`!Joy level leaderboard` — top 10\n"
+            "`!Joy level setchannel <channel_id>` — set channel notif level-up"))
+
+# ── XP prefix ────────────────────────────────────────────────────────────────
+
+@bot.command(name="xp")
+async def pfx_xp(ctx: commands.Context, sub: str = "", *args):
+    """!Joy xp add/remove/set/setlevel/reset <member_id> <amount>"""
+    if not ctx.author.guild_permissions.manage_guild:
+        return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+    sub = sub.lower()
+    gc  = guild_cfg(cfg, ctx.guild.id)
+
+    if sub in ("add", "remove", "set", "setlevel", "reset"):
+        if not args:
+            return await ctx.send(embed=error_embed(f"Usage: `!Joy xp {sub} <@member> [amount]`"))
+        try:
+            member_id = int(args[0].strip("<@!>"))
+            member    = ctx.guild.get_member(member_id)
+            if not member:
+                return await ctx.send(embed=error_embed("Member tidak ditemukan."))
+        except ValueError:
+            return await ctx.send(embed=error_embed("Mention atau ID member yang valid."))
+
+        data = get_member_xp(gc, str(member.id))
+
+        if sub == "reset":
+            gc["members_xp"][str(member.id)] = {"xp": 0, "level": 0, "last_msg_ts": 0.0, "messages": 0}
+            save_config(cfg)
+            return await ctx.send(embed=success_embed(f"Reset XP dan level {member.mention} ke 0."))
+
+        if len(args) < 2:
+            return await ctx.send(embed=error_embed(f"Usage: `!Joy xp {sub} <@member> <amount>`"))
+        try:
+            amount = int(args[1])
+        except ValueError:
+            return await ctx.send(embed=error_embed("Amount harus angka."))
+
+        if sub == "add":
+            if amount <= 0:
+                return await ctx.send(embed=error_embed("Amount harus positif."))
+            old_level = data["level"]
+            data["xp"] += amount
+            data["level"] = level_from_xp(data["xp"])
+            save_config(cfg)
+            embed = success_embed(f"Ditambahkan **{amount} XP** ke {member.mention}.")
+            embed.add_field(name="Total XP", value=str(data["xp"]), inline=True)
+            embed.add_field(name="Level",    value=str(data["level"]), inline=True)
+            if data["level"] > old_level:
+                embed.add_field(name="⬆️", value=f"Level up ke **{data['level']}**!", inline=True)
+            await ctx.send(embed=embed)
+        elif sub == "remove":
+            if amount <= 0:
+                return await ctx.send(embed=error_embed("Amount harus positif."))
+            data["xp"]    = max(0, data["xp"] - amount)
+            data["level"] = level_from_xp(data["xp"])
+            save_config(cfg)
+            embed = success_embed(f"Dikurangi **{amount} XP** dari {member.mention}.")
+            embed.add_field(name="Total XP", value=str(data["xp"]), inline=True)
+            embed.add_field(name="Level",    value=str(data["level"]), inline=True)
+            await ctx.send(embed=embed)
+        elif sub == "set":
+            if amount < 0:
+                return await ctx.send(embed=error_embed("XP tidak bisa negatif."))
+            data["xp"]    = amount
+            data["level"] = level_from_xp(amount)
+            save_config(cfg)
+            await ctx.send(embed=success_embed(f"XP {member.mention} diset ke **{amount}** (Level **{data['level']}**)."))
+        elif sub == "setlevel":
+            if not (0 <= amount <= 999):
+                return await ctx.send(embed=error_embed("Level harus antara 0 dan 999."))
+            total_xp = sum(xp_for_level(lv) for lv in range(amount))
+            data["xp"]    = total_xp
+            data["level"] = amount
+            save_config(cfg)
+            await ctx.send(embed=success_embed(f"Level {member.mention} diset ke **{amount}** ({total_xp} XP)."))
+    else:
+        await ctx.send(embed=info_embed("⭐ XP",
+            "Usage:\n"
+            "`!Joy xp add <@member> <amount>`\n"
+            "`!Joy xp remove <@member> <amount>`\n"
+            "`!Joy xp set <@member> <amount>`\n"
+            "`!Joy xp setlevel <@member> <level>`\n"
+            "`!Joy xp reset <@member>`"))
+
+# ── QUEST prefix ──────────────────────────────────────────────────────────────
+
+@bot.command(name="quest")
+async def pfx_quest(ctx: commands.Context, sub: str = "", *args):
+    """!Joy quest list | !Joy quest create | !Joy quest delete <name> | !Joy quest toggle <name> | !Joy quest setchannel <id>"""
+    sub = sub.lower()
+    gc  = guild_cfg(cfg, ctx.guild.id)
+
+    if sub == "list":
+        quests = gc.get("quests", [])
+        if not quests:
+            return await ctx.send(embed=info_embed("📋 Quests", "Belum ada quest. Buat dengan `!Joy quest create`."))
+        embed = discord.Embed(title="📋 Active Quests", color=EMBED_COLOR, timestamp=discord.utils.utcnow())
+        for q in quests[:10]:
+            status = "✅ Active" if q.get("active", True) else "❌ Disabled"
+            embed.add_field(
+                name=f"{'🟢' if q.get('active', True) else '🔴'} {q['name']}",
+                value=(
+                    f"{q.get('description','')}\n"
+                    f"🎯 {QUEST_TYPES.get(q['type'],'?').format(target=q.get('target',1))}\n"
+                    f"⭐ XP: +{q.get('reward_xp',0)} ⠀·⠀ {status}"
+                ),
+                inline=False
+            )
+        embed.set_footer(text=f"JoyCannot Quest System • {len(quests)} quest(s)")
+        await ctx.send(embed=embed)
+
+    elif sub == "create":
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        # !Joy quest create <type> <target> <reward_xp> <name...>
+        # type: send_messages | reactions_given | days_active
+        if len(args) < 4:
+            return await ctx.send(embed=error_embed(
+                "Usage: `!Joy quest create <type> <target> <reward_xp> <name>`\n"
+                "Types: `send_messages`, `reactions_given`, `days_active`\n"
+                "Example: `!Joy quest create send_messages 100 50 Daily Chatter`"))
+        qtype  = args[0].lower()
+        if qtype not in QUEST_TYPES:
+            return await ctx.send(embed=error_embed(f"Tipe quest valid: {', '.join(QUEST_TYPES.keys())}"))
+        try:
+            target     = int(args[1])
+            reward_xp  = int(args[2])
+        except ValueError:
+            return await ctx.send(embed=error_embed("Target dan reward_xp harus angka."))
+        name = " ".join(args[3:])
+        if not name:
+            return await ctx.send(embed=error_embed("Nama quest tidak boleh kosong."))
+        quest_id = f"q_{len(gc['quests'])+1}_{int(discord.utils.utcnow().timestamp())}"
+        quest = {"id": quest_id, "name": name, "description": f"{QUEST_TYPES[qtype].format(target=target)}",
+                 "type": qtype, "target": target, "reward_xp": max(0, reward_xp),
+                 "reward_text": "", "active": True, "created_by": ctx.author.id}
+        gc["quests"].append(quest)
+        save_config(cfg)
+        embed = base_embed("✅ Quest Dibuat!", None, color=0x22C55E)
+        embed.add_field(name="📋 Nama",    value=name,     inline=True)
+        embed.add_field(name="🎯 Tipe",    value=QUEST_TYPES[qtype].format(target=target), inline=True)
+        embed.add_field(name="⭐ XP",      value=f"+{reward_xp}", inline=True)
+        await ctx.send(embed=embed)
+
+    elif sub == "delete":
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        if not args:
+            return await ctx.send(embed=error_embed("Usage: `!Joy quest delete <name>`"))
+        name   = " ".join(args)
+        before = len(gc["quests"])
+        gc["quests"] = [q for q in gc["quests"] if q["name"].lower() != name.lower()]
+        if len(gc["quests"]) == before:
+            return await ctx.send(embed=error_embed(f"Quest `{name}` tidak ditemukan."))
+        save_config(cfg)
+        await ctx.send(embed=success_embed(f"Quest **{name}** dihapus."))
+
+    elif sub == "toggle":
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        if not args:
+            return await ctx.send(embed=error_embed("Usage: `!Joy quest toggle <name>`"))
+        name = " ".join(args)
+        for quest in gc["quests"]:
+            if quest["name"].lower() == name.lower():
+                quest["active"] = not quest.get("active", True)
+                save_config(cfg)
+                state = "enabled ✅" if quest["active"] else "disabled ❌"
+                return await ctx.send(embed=success_embed(f"Quest **{name}** sekarang {state}."))
+        await ctx.send(embed=error_embed(f"Quest `{name}` tidak ditemukan."))
+
+    elif sub == "setchannel":
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        if not args:
+            gc["quest_channel"] = None
+            save_config(cfg)
+            return await ctx.send(embed=success_embed("Quest channel dinonaktifkan."))
+        try:
+            ch_id = int(args[0])
+            ch    = ctx.guild.get_channel(ch_id)
+            if not ch:
+                return await ctx.send(embed=error_embed("Channel tidak ditemukan."))
+            gc["quest_channel"] = ch_id
+            save_config(cfg)
+            await ctx.send(embed=success_embed(f"Quest channel diset ke {ch.mention}."))
+        except ValueError:
+            await ctx.send(embed=error_embed("Gunakan channel ID angka."))
+    else:
+        await ctx.send(embed=info_embed("📋 Quest",
+            "Usage:\n"
+            "`!Joy quest list` — lihat semua quest\n"
+            "`!Joy quest create <type> <target> <xp> <name>` — buat quest baru\n"
+            "`!Joy quest delete <name>` — hapus quest\n"
+            "`!Joy quest toggle <name>` — enable/disable quest\n"
+            "`!Joy quest setchannel <channel_id>` — set quest channel"))
+
+# ── GIVEAWAY prefix ───────────────────────────────────────────────────────────
+
+@bot.command(name="giveaway")
+async def pfx_giveaway(ctx: commands.Context, sub: str = "", *args):
+    """
+    !Joy giveaway start <duration> <winners> <prize> [--role <role_id>] [--winrole <role_id>]
+    !Joy giveaway end <message_id>
+    !Joy giveaway reroll <message_id> [count]
+    !Joy giveaway list
+    """
+    sub = sub.lower()
+
+    if sub == "list":
+        guild_gws = [gw for gw in active_giveaways.values() if gw.get("guild_id") == ctx.guild.id]
+        if not guild_gws:
+            return await ctx.send(embed=info_embed("🎊 Giveaways", "Tidak ada giveaway aktif saat ini."))
+        embed = discord.Embed(title="🎊 Active Giveaways", color=EMBED_COLOR, timestamp=discord.utils.utcnow())
+        for gw in guild_gws[:10]:
+            ends_dt = datetime.datetime.utcfromtimestamp(gw["ends_ts"]).replace(tzinfo=datetime.timezone.utc)
+            ch      = bot.get_channel(gw["channel_id"])
+            embed.add_field(
+                name=f"🎁 {gw['prize']}",
+                value=(
+                    f"**Channel:** {ch.mention if ch else 'unknown'}\n"
+                    f"**Ends:** {discord.utils.format_dt(ends_dt, 'R')}\n"
+                    f"**Winners:** {gw['winner_count']} ⠀·⠀ **Entries:** {len(gw['entries'])}\n"
+                    f"**ID:** `{gw['message_id']}`"
+                ),
+                inline=False
+            )
+        embed.set_footer(text=f"JoyCannot Giveaway System • {len(guild_gws)} active")
+        await ctx.send(embed=embed)
+
+    elif sub == "end":
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        if not args:
+            return await ctx.send(embed=error_embed("Usage: `!Joy giveaway end <message_id>`"))
+        try:
+            mid = int(args[0])
+        except ValueError:
+            return await ctx.send(embed=error_embed("Message ID harus angka."))
+        gw = active_giveaways.get(mid)
+        if not gw:
+            return await ctx.send(embed=error_embed("Tidak ada giveaway aktif dengan ID tersebut."))
+        if gw["guild_id"] != ctx.guild.id:
+            return await ctx.send(embed=error_embed("Giveaway itu bukan dari server ini."))
+        await ctx.send(embed=info_embed("⏩ Mengakhiri giveaway...", f"Force-ending **{gw['prize']}**."))
+        await end_giveaway(gw)
+
+    elif sub == "reroll":
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        if not args:
+            return await ctx.send(embed=error_embed("Usage: `!Joy giveaway reroll <message_id> [count]`"))
+        try:
+            mid   = int(args[0])
+            count = int(args[1]) if len(args) > 1 else 1
+        except ValueError:
+            return await ctx.send(embed=error_embed("Message ID dan count harus angka."))
+        try:
+            msg = await ctx.channel.fetch_message(mid)
+        except discord.NotFound:
+            return await ctx.send(embed=error_embed("Pesan tidak ditemukan di channel ini."))
+        entries = []
+        for reaction in msg.reactions:
+            if str(reaction.emoji) == "🎉":
+                async for user in reaction.users():
+                    if not user.bot:
+                        entries.append(user.id)
+                break
+        if not entries:
+            return await ctx.send(embed=error_embed("Tidak ada peserta di pesan tersebut."))
+        count   = max(1, min(count, len(entries)))
+        winners = random.sample(list(set(entries)), count)
+        winner_str = " ".join(f"<@{w}>" for w in winners)
+        embed = discord.Embed(
+            title="🔁 Giveaway Rerolled!",
+            description=(
+                f"Pemenang baru: {winner_str}\n\n"
+                f"🔗 [Jump to Giveaway](https://discord.com/channels/{ctx.guild.id}/{ctx.channel.id}/{mid})"
+            ),
+            color=0xF59E0B, timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text="JoyCannot Giveaway System")
+        await ctx.send(content=winner_str, embed=embed)
+
+    elif sub == "start":
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+        # Usage: !Joy giveaway start <duration> <winners> <prize> [--role <id>] [--winrole <id>]
+        if len(args) < 3:
+            return await ctx.send(embed=error_embed(
+                "Usage: `!Joy giveaway start <duration> <winners> <prize>`\n"
+                "Optional: `--role <role_id>` (required role) `--winrole <role_id>` (auto role for winners)\n"
+                "Example: `!Joy giveaway start 1h 1 Steam Gift Card $10`\n"
+                "Example: `!Joy giveaway start 30m 3 Premium Key --winrole 123456789`"))
+
+        dur_str  = args[0].lower()
+        m_dur = re.fullmatch(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?", dur_str)
+        if not m_dur or not any(m_dur.group(x) for x in (1, 2, 3)):
+            return await ctx.send(embed=error_embed("Format durasi tidak valid. Contoh: `1h`, `30m`, `2h30m`, `1d`"))
+        dur_secs = (int(m_dur.group(1) or 0) * 86400
+                  + int(m_dur.group(2) or 0) * 3600
+                  + int(m_dur.group(3) or 0) * 60)
+        if not dur_secs or dur_secs > 7 * 86400:
+            return await ctx.send(embed=error_embed("Durasi harus antara 1 menit dan 7 hari."))
+
+        try:
+            winner_count = int(args[1])
+            if not (1 <= winner_count <= 20):
+                raise ValueError
+        except ValueError:
+            return await ctx.send(embed=error_embed("Jumlah pemenang harus antara 1 dan 20."))
+
+        # Parse remaining args for prize and optional flags
+        rest = list(args[2:])
+        req_role_id  = None
+        win_role_id  = None
+        prize_parts  = []
+        i_idx = 0
+        while i_idx < len(rest):
+            if rest[i_idx] == "--role" and i_idx + 1 < len(rest):
+                try:
+                    req_role_id = int(rest[i_idx + 1])
+                except ValueError:
+                    pass
+                i_idx += 2
+            elif rest[i_idx] == "--winrole" and i_idx + 1 < len(rest):
+                try:
+                    win_role_id = int(rest[i_idx + 1])
+                except ValueError:
+                    pass
+                i_idx += 2
+            else:
+                prize_parts.append(rest[i_idx])
+                i_idx += 1
+
+        prize = " ".join(prize_parts).strip()
+        if not prize:
+            return await ctx.send(embed=error_embed("Nama hadiah tidak boleh kosong."))
+
+        req_role = ctx.guild.get_role(req_role_id) if req_role_id else None
+        win_role = ctx.guild.get_role(win_role_id) if win_role_id else None
+
+        ends_ts = discord.utils.utcnow().timestamp() + dur_secs
+        gw = {
+            "prize":          prize,
+            "description":    "",
+            "winner_count":   winner_count,
+            "host_id":        ctx.author.id,
+            "channel_id":     ctx.channel.id,
+            "guild_id":       ctx.guild.id,
+            "ends_ts":        ends_ts,
+            "entries":        [],
+            "winners":        [],
+            "ended":          False,
+            "message_id":     0,
+            "required_role":  req_role.id if req_role else None,
+            "min_level":      0,
+            "winner_role_id": win_role.id if win_role else None,
+        }
+
+        gw_embed = build_giveaway_embed(gw)
+        try:
+            msg = await ctx.channel.send(embed=gw_embed)
+            await msg.add_reaction("🎉")
+        except discord.Forbidden:
+            return await ctx.send(embed=error_embed("Bot tidak bisa mengirim pesan di channel ini."))
+
+        gw["message_id"] = msg.id
+        active_giveaways[msg.id] = gw
+
+        async def giveaway_timer():
+            await asyncio.sleep(dur_secs)
+            if msg.id in active_giveaways:
+                await end_giveaway(active_giveaways[msg.id])
+
+        asyncio.create_task(giveaway_timer())
+
+        ends_dt = datetime.datetime.utcfromtimestamp(ends_ts).replace(tzinfo=datetime.timezone.utc)
+        confirm = success_embed(
+            f"🎊 Giveaway dimulai!\n\n"
+            f"🎁 **Prize:** {prize}\n"
+            f"🏅 **Winners:** {winner_count}\n"
+            f"⏰ **Ends:** {discord.utils.format_dt(ends_dt, 'R')}"
+        )
+        if req_role:
+            confirm.add_field(name="🎭 Required Role", value=req_role.mention, inline=True)
+        if win_role:
+            confirm.add_field(name="🎖️ Winner Role",   value=win_role.mention, inline=True)
+        await ctx.send(embed=confirm)
+    else:
+        await ctx.send(embed=info_embed("🎊 Giveaway",
+            "Usage:\n"
+            "`!Joy giveaway start <durasi> <winners> <prize>` — mulai giveaway\n"
+            "> Optional: `--role <role_id>` `--winrole <role_id>`\n"
+            "`!Joy giveaway end <message_id>` — paksa akhiri\n"
+            "`!Joy giveaway reroll <message_id> [count]` — reroll pemenang\n"
+            "`!Joy giveaway list` — lihat giveaway aktif"))
+
+# ─────────────────────────────────────────────
 # ERROR HANDLERS
 # ─────────────────────────────────────────────
 
@@ -4300,11 +4905,30 @@ async def end_giveaway(gw: dict):
     # Announce winners — tag them in content for notification
     if winners:
         winner_str = " ".join(f"<@{w}>" for w in winners)
+
+        # ── Auto-assign winner role if configured ──────────────────────────
+        winner_role_id = gw.get("winner_role_id")
+        role_note = ""
+        if winner_role_id:
+            winner_role_obj = channel.guild.get_role(winner_role_id)
+            if winner_role_obj:
+                assigned = []
+                for w_id in winners:
+                    member = channel.guild.get_member(w_id)
+                    if member:
+                        try:
+                            await member.add_roles(winner_role_obj, reason=f"Giveaway winner: {gw['prize']}")
+                            assigned.append(member.display_name)
+                        except discord.Forbidden:
+                            pass
+                if assigned:
+                    role_note = f"\n🎖️ **Winner Role:** {winner_role_obj.mention} diberikan ke {len(assigned)} pemenang"
+
         win_embed  = discord.Embed(
             title="🏆 Giveaway Winners!",
             description=(
                 f"Selamat kepada {winner_str}!\n\n"
-                f"🎁 **Prize:** {gw['prize']}\n"
+                f"🎁 **Prize:** {gw['prize']}{role_note}\n"
                 f"🔗 [Jump to Giveaway](https://discord.com/channels/{channel.guild.id}/{channel.id}/{msg.id})"
             ),
             color=0x22C55E,
@@ -4335,7 +4959,8 @@ giveaway_group = app_commands.Group(name="giveaway", description="Create and man
     description="Optional description or extra info about the prize",
     required_role="Only members with this role can enter (leave blank = everyone)",
     min_level="Minimum XP level required to enter (0 = no requirement)",
-    channel="Channel to post giveaway (leave blank = current channel)"
+    channel="Channel to post giveaway (leave blank = current channel)",
+    winner_role="Role automatically assigned to ALL winners when giveaway ends (optional)"
 )
 async def slash_giveaway_start(
     i: discord.Interaction,
@@ -4345,7 +4970,8 @@ async def slash_giveaway_start(
     description: str = "",
     required_role: Optional[discord.Role] = None,
     min_level: int = 0,
-    channel: Optional[discord.TextChannel] = None
+    channel: Optional[discord.TextChannel] = None,
+    winner_role: Optional[discord.Role] = None,
 ):
     if not i.user.guild_permissions.manage_guild:
         return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
@@ -4388,6 +5014,7 @@ async def slash_giveaway_start(
         "message_id":    0,
         "required_role": required_role.id if required_role else None,
         "min_level":     min_level,
+        "winner_role_id": winner_role.id if winner_role else None,
     }
 
     embed = build_giveaway_embed(gw)
@@ -4424,6 +5051,8 @@ async def slash_giveaway_start(
         confirm.add_field(name="🎭 Required Role", value=required_role.mention, inline=True)
     if min_level > 0:
         confirm.add_field(name="⭐ Min Level",    value=str(min_level),         inline=True)
+    if winner_role:
+        confirm.add_field(name="🎖️ Winner Role",  value=winner_role.mention,    inline=True)
     await i.response.send_message(embed=confirm, ephemeral=True)
 
 
