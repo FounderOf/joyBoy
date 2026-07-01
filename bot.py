@@ -93,6 +93,8 @@ def load_config() -> dict:
     data.setdefault("votes",            {})
     data.setdefault("no_prefix_users",   [])
     data.setdefault("no_prefix_guilds",  [])
+    data.setdefault("bot_roles",         {})  # uid → role: staff/management/developer/founder
+    data.setdefault("premium_expiry",    {})  # uid → ISO timestamp expiry
     # ── Migrate whitelist_role → support_role in all guilds ──────────────
     for gid, gc in data.get("guilds", {}).items():
         tkt = gc.get("ticket", {})
@@ -131,6 +133,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
             },
             "warnings": {},
             "active_tickets": {},
+            "spam_trap_channel": None,  # honeypot channel — siapapun kirim pesan = auto ban
             # ── Leveling & Quest ──────────────────────────────────────────
             "leveling_enabled": True,
             "level_channel":    None,
@@ -150,6 +153,7 @@ def guild_cfg(cfg: dict, guild_id: int) -> dict:
         tkt["support_role"] = tkt.pop("whitelist_role")
     tkt.setdefault("max_tickets", 1)
     # Ensure leveling keys exist for older guild configs
+    gc.setdefault("spam_trap_channel", None)
     gc.setdefault("leveling_enabled", True)
     gc.setdefault("level_channel",    None)
     gc.setdefault("quest_channel",    None)
@@ -437,15 +441,52 @@ bot = commands.Bot(
 
 def user_has_premium(guild: Optional[discord.Guild], user: discord.abc.User) -> bool:
     """
-    Return True if:
-    - User ID is in the global premium_users list (individual premium), OR
-    - The guild they're in is in premium_guilds (server-wide premium)
+    Return True if user has active premium (checks expiry).
+    - User ID in premium_users with valid expiry, OR
+    - Guild in premium_guilds
     """
+    uid = str(user.id)
+    expiry_map = cfg.get("premium_expiry", {})
     if user.id in cfg.get("premium_users", []):
+        expiry_str = expiry_map.get(uid)
+        if expiry_str:
+            try:
+                expiry_dt = datetime.datetime.fromisoformat(expiry_str)
+                if expiry_dt.tzinfo is None:
+                    expiry_dt = expiry_dt.replace(tzinfo=datetime.timezone.utc)
+                if datetime.datetime.now(datetime.timezone.utc) > expiry_dt:
+                    # Expired — auto revoke
+                    cfg["premium_users"] = [u for u in cfg["premium_users"] if u != user.id]
+                    cfg["premium_expiry"].pop(uid, None)
+                    save_config(cfg)
+                    return False
+            except Exception:
+                pass
         return True
     if guild and guild.id in cfg.get("premium_guilds", []):
         return True
     return False
+
+async def check_premium_expiry():
+    """Background task — cek dan revoke expired premium setiap 10 menit."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expiry_map = cfg.get("premium_expiry", {})
+    revoked = []
+    for uid_str, expiry_str in list(expiry_map.items()):
+        try:
+            expiry_dt = datetime.datetime.fromisoformat(expiry_str)
+            if expiry_dt.tzinfo is None:
+                expiry_dt = expiry_dt.replace(tzinfo=datetime.timezone.utc)
+            if now > expiry_dt:
+                uid = int(uid_str)
+                cfg["premium_users"] = [u for u in cfg.get("premium_users", []) if u != uid]
+                expiry_map.pop(uid_str, None)
+                revoked.append(uid)
+        except Exception:
+            pass
+    if revoked:
+        save_config(cfg)
+        logging.info(f"[Premium Expiry] Revoked {len(revoked)} expired: {revoked}")
 
 PREMIUM_NICK      = "JoyCannot Premium"
 PREMIUM_ROLE_NAME = "⭐ JoyCannot Premium"
@@ -685,6 +726,10 @@ async def global_prefix_premium_check(ctx: commands.Context) -> bool:
 # EVENTS
 # ─────────────────────────────────────────────
 
+@tasks.loop(minutes=10)
+async def premium_expiry_task():
+    await check_premium_expiry()
+
 @bot.event
 async def on_ready():
     print(f"[JoyCannot] Ready as {bot.user} (ID: {bot.user.id})")
@@ -712,6 +757,8 @@ async def on_ready():
 
     cleanup_spam_cache.start()
     rotate_status.start()
+    if not premium_expiry_task.is_running():
+        premium_expiry_task.start()
     print(f"[JoyCannot] Ready — {len(bot.guilds)} guild(s).")
 
     # ── Restore premium nicknames for all activated guilds ──
@@ -790,6 +837,56 @@ async def on_message(message: discord.Message):
     """Single on_message: anti-spam + prefix routing."""
     if message.author.bot:
         return
+
+    # ── Honeypot channel — siapapun kirim pesan di sini langsung ban ────────
+    if message.guild:
+        gc_trap = guild_cfg(cfg, message.guild.id)
+        trap_ch = gc_trap.get("spam_trap_channel")
+        if trap_ch and message.channel.id == trap_ch:
+            # Hapus pesannya dulu
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            # Auto ban
+            banned = False
+            try:
+                await message.guild.ban(
+                    message.author,
+                    reason="[JoyCannot] Mengirim pesan di honeypot/spam-trap channel.",
+                    delete_message_days=1
+                )
+                banned = True
+            except discord.Forbidden:
+                pass
+            # Log ke ticket log channel
+            log_id = gc_trap["ticket"].get("log_channel")
+            if log_id:
+                log_ch = message.guild.get_channel(log_id)
+                if log_ch:
+                    log_embed = discord.Embed(
+                        title="Honeypot — User Auto-Banned",
+                        description=(
+                            f"{message.author.mention} mengirim pesan di "
+                            f"<#{trap_ch}> dan langsung di-ban."
+                        ),
+                        color=0xEF4444,
+                        timestamp=discord.utils.utcnow()
+                    )
+                    log_embed.set_author(name=str(message.author), icon_url=message.author.display_avatar.url)
+                    log_embed.add_field(name="User ID", value=f"`{message.author.id}`", inline=True)
+                    log_embed.add_field(name="Action", value="Banned" if banned else "Ban failed (no perm)", inline=True)
+                    snippet = (message.content or "")[:200]
+                    if snippet:
+                        log_embed.add_field(name="Isi pesan", value=f"```{snippet}```", inline=False)
+                    elif message.attachments:
+                        log_embed.add_field(name="Attachment", value=message.attachments[0].filename, inline=False)
+                    log_embed.set_footer(text="JoyCannot Honeypot System")
+                    try:
+                        await log_ch.send(embed=log_embed)
+                    except Exception:
+                        pass
+            return  # stop processing, jangan lanjut ke prefix/XP/dll
 
     # ── Anti cross-channel spam ───────────────────────────────────────────
     if message.guild:
@@ -1455,7 +1552,7 @@ async def do_help(reply_fn, ctx=None):
         "`addrole @user @role`\n`removerole @user @role`\n`move @user #voice`"
     ), inline=False)
     embed.add_field(name="Info", value=(
-        "`userinfo [@user]`\n`serverinfo`\n`avatar [@user]`\n`ping`\n`addemoji <:emoji:id>`"
+        "`userinfo [@user]`\n`serverinfo`\n`avatar [@user]`\n`ping`\n`addemoji <:emoji:id>`\n`profile [@user]` — lihat profile & badge"
     ), inline=False)
     embed.add_field(name="Ticket", value=(
         "`ticket setup <cat_id> <log_id> [role_id] [max]`\n"
@@ -3916,6 +4013,375 @@ async def pfx_setchannel(ctx: commands.Context):
     embed.add_field(name="💡 Tip", value="Enable Developer Mode in Discord settings to copy IDs.", inline=False)
     embed.add_field(name="📊 Connected Servers", value=str(len(bot.guilds)), inline=True)
     await ctx.send(embed=embed, view=SetChannelView(ctx.author.id))
+
+
+
+# ─────────────────────────────────────────────
+# ANTISPAM HONEYPOT SLASH COMMAND
+# ─────────────────────────────────────────────
+
+antispam_group = app_commands.Group(
+    name="antispam",
+    description="Kelola honeypot channel — siapapun yang kirim pesan di sini langsung di-ban."
+)
+
+@antispam_group.command(name="setchannel", description="Set honeypot channel. Siapapun yang kirim pesan di channel ini langsung di-ban.")
+@app_commands.describe(channel="Channel yang dijadikan honeypot/spam-trap (biarkan kosong untuk nonaktifkan)")
+async def slash_antispam_setchannel(i: discord.Interaction, channel: discord.TextChannel = None):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc = guild_cfg(cfg, i.guild.id)
+    if channel is None:
+        gc["spam_trap_channel"] = None
+        save_config(cfg)
+        return await i.response.send_message(
+            embed=success_embed("Honeypot channel dinonaktifkan."), ephemeral=True)
+    gc["spam_trap_channel"] = channel.id
+    save_config(cfg)
+    embed = base_embed(
+        "Honeypot Channel Diset",
+        (channel.mention + " sekarang adalah **spam-trap channel**.\n\n"
+         "Siapapun yang mengirim pesan di channel ini akan langsung **di-ban otomatis**.\n\n"
+         "Pastikan channel ini tidak bisa dilihat member biasa — hanya untuk menjebak bot spam/raider.\n"
+         "Gunakan `/antispam setchannel` tanpa channel untuk menonaktifkan."),
+        color=0xEF4444
+    )
+    embed.add_field(name="Channel", value=channel.mention, inline=True)
+    embed.add_field(name="Status", value="Aktif", inline=True)
+    await i.response.send_message(embed=embed)
+
+@antispam_group.command(name="status", description="Lihat status honeypot channel saat ini.")
+async def slash_antispam_status(i: discord.Interaction):
+    if not i.user.guild_permissions.manage_guild:
+        return await i.response.send_message(embed=error_embed(t(cfg, i.guild.id, "no_perm")), ephemeral=True)
+    gc     = guild_cfg(cfg, i.guild.id)
+    trap   = gc.get("spam_trap_channel")
+    ch     = i.guild.get_channel(trap) if trap else None
+    if ch:
+        embed = base_embed("Honeypot Status", "Aktif di " + ch.mention + "\nSiapapun yang kirim pesan di sana langsung di-ban.", color=0xEF4444)
+    else:
+        embed = base_embed("Honeypot Status", "Tidak aktif. Gunakan `/antispam setchannel` untuk mengaktifkan.")
+    await i.response.send_message(embed=embed, ephemeral=True)
+
+bot.tree.add_command(antispam_group)
+
+# Prefix bridge untuk antispam
+@bot.command(name="antispam")
+async def pfx_antispam(ctx: commands.Context, sub: str = "", *, args: str = ""):
+    if not ctx.author.guild_permissions.manage_guild:
+        return await ctx.send(embed=error_embed(t(cfg, ctx.guild.id, "no_perm")))
+    gc  = guild_cfg(cfg, ctx.guild.id)
+    sub = sub.lower()
+    if sub == "setchannel":
+        if not args:
+            gc["spam_trap_channel"] = None
+            save_config(cfg)
+            return await ctx.send(embed=success_embed("Honeypot channel dinonaktifkan."))
+        # coba parse channel mention atau ID
+        ch = None
+        if ctx.message.channel_mentions:
+            ch = ctx.message.channel_mentions[0]
+        else:
+            try:
+                ch = ctx.guild.get_channel(int(args.strip()))
+            except ValueError:
+                pass
+        if not ch:
+            return await ctx.send(embed=error_embed("Channel tidak ditemukan. Gunakan #mention atau channel ID."))
+        gc["spam_trap_channel"] = ch.id
+        save_config(cfg)
+        await ctx.send(embed=base_embed(
+            "Honeypot Channel Diset",
+            ch.mention + " sekarang adalah spam-trap channel.\nSiapapun yang kirim pesan di sana langsung di-ban.",
+            color=0xEF4444))
+    elif sub == "status":
+        trap = gc.get("spam_trap_channel")
+        ch   = ctx.guild.get_channel(trap) if trap else None
+        if ch:
+            await ctx.send(embed=base_embed("Honeypot Status", f"Aktif di {ch.mention}", color=0xEF4444))
+        else:
+            await ctx.send(embed=base_embed("Honeypot Status", "Tidak aktif."))
+    else:
+        await ctx.send(embed=info_embed("Antispam Honeypot",
+            "`!Joy antispam setchannel #channel` — set honeypot channel\n"
+            "`!Joy antispam setchannel` — nonaktifkan\n"
+            "`!Joy antispam status` — lihat status"))
+
+
+
+# ─────────────────────────────────────────────
+# BOT ROLES SYSTEM
+# Hierarki: founder > developer > management > staff
+# Hanya founder (owner) yang bisa assign semua role.
+# ─────────────────────────────────────────────
+
+BOT_ROLE_HIERARCHY = ["staff", "management", "developer", "founder"]
+
+BOT_ROLE_BADGES = {
+    "founder":    {"label": "FOUNDER",    "color": 0xF59E0B},  # gold
+    "developer":  {"label": "DEVELOPER",  "color": 0x6366F1},  # purple
+    "management": {"label": "MANAGEMENT", "color": 0x3B82F6},  # blue
+    "staff":      {"label": "STAFF",      "color": 0xEF4444},  # red
+    "premium":    {"label": "PREMIUM",    "color": 0xF59E0B},  # gold
+    "noprefix":   {"label": "NO PREFIX",  "color": 0x22C55E},  # green
+    "user":       {"label": "USER",       "color": 0x6B7280},  # gray
+}
+
+def get_bot_role(uid: int) -> str:
+    """Dapatkan bot role user. Founder = owner."""
+    if uid == bot.owner_id:
+        return "founder"
+    return cfg.get("bot_roles", {}).get(str(uid), "user")
+
+def get_user_badges(uid: int) -> list:
+    """Kumpulkan semua badge yang dimiliki user."""
+    badges = []
+    role = get_bot_role(uid)
+    if role != "user":
+        badges.append(role)
+    np_users  = cfg.get("no_prefix_users", [])
+    np_guilds = cfg.get("no_prefix_guilds", [])
+    if uid in np_users:
+        badges.append("noprefix")
+    if uid in cfg.get("premium_users", []):
+        badges.append("premium")
+    if not badges:
+        badges.append("user")
+    return badges
+
+def build_profile_embed(user: discord.User | discord.Member) -> discord.Embed:
+    """Buat profile card embed."""
+    uid    = user.id
+    role   = get_bot_role(uid)
+    badges = get_user_badges(uid)
+
+    # Warna embed sesuai role tertinggi
+    top_role   = role if role != "user" else (badges[0] if badges else "user")
+    embed_color = BOT_ROLE_BADGES.get(top_role, BOT_ROLE_BADGES["user"])["color"]
+
+    embed = discord.Embed(
+        title=f"{user.display_name}'s Profile",
+        color=embed_color,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_thumbnail(url=user.display_avatar.url)
+
+    # Badges
+    badge_lines = []
+    for b in badges:
+        info = BOT_ROLE_BADGES.get(b, BOT_ROLE_BADGES["user"])
+        badge_lines.append(f"• **{info['label']}**")
+    embed.add_field(name="ALL BADGES", value="\n".join(badge_lines), inline=True)
+
+    # Premium status
+    expiry_map = cfg.get("premium_expiry", {})
+    if uid in cfg.get("premium_users", []):
+        expiry_str = expiry_map.get(str(uid))
+        if expiry_str:
+            try:
+                expiry_dt = datetime.datetime.fromisoformat(expiry_str)
+                if expiry_dt.tzinfo is None:
+                    expiry_dt = expiry_dt.replace(tzinfo=datetime.timezone.utc)
+                embed.add_field(
+                    name="Premium Expires",
+                    value=discord.utils.format_dt(expiry_dt, "R"),
+                    inline=True
+                )
+            except Exception:
+                embed.add_field(name="Premium", value="Active", inline=True)
+        else:
+            embed.add_field(name="Premium", value="Active (lifetime)", inline=True)
+    else:
+        embed.add_field(name="Premium", value="Not active", inline=True)
+
+    embed.add_field(name="Bot Role", value=role.capitalize(), inline=True)
+    embed.set_footer(text=f"JoyCannot • ID: {uid}")
+    return embed
+
+# ─────────────────────────────────────────────
+# PROFILE command
+# ─────────────────────────────────────────────
+
+@bot.command(name="profile")
+async def pfx_profile(ctx: commands.Context, member: discord.Member = None):
+    """!Joy profile [@user] — lihat profile & badge bot role"""
+    target = member or ctx.author
+    embed  = build_profile_embed(target)
+    embed.set_author(
+        name=f"Profile & Badge Panel",
+        icon_url=target.display_avatar.url
+    )
+    embed.add_field(
+        name="Requested By",
+        value=ctx.author.display_name,
+        inline=False
+    )
+    await ctx.send(embed=embed)
+
+# ─────────────────────────────────────────────
+# BOTROLE command (owner only)
+# ─────────────────────────────────────────────
+
+@bot.command(name="botrole")
+@is_owner()
+async def pfx_botrole(ctx: commands.Context, action: str = "", member: discord.Member = None, role: str = ""):
+    """
+    !Joy botrole set @user <role>  — assign bot role (staff/management/developer)
+    !Joy botrole remove @user      — hapus bot role
+    !Joy botrole list              — lihat semua bot roles
+    """
+    action = action.lower()
+    bot_roles = cfg.setdefault("bot_roles", {})
+
+    if action == "list":
+        if not bot_roles:
+            return await ctx.send(embed=info_embed("Bot Roles", "Belum ada assignment."))
+        lines = []
+        for uid_str, r in bot_roles.items():
+            user = bot.get_user(int(uid_str))
+            name = user.display_name if user else f"ID {uid_str}"
+            lines.append(f"**{name}** → {r.capitalize()}")
+        lines.append(f"\n**{ctx.guild.owner.display_name if ctx.guild else 'Owner'}** → Founder *(owner)*")
+        embed = info_embed("Bot Roles", "\n".join(lines))
+        return await ctx.send(embed=embed)
+
+    if not member:
+        return await ctx.send(embed=error_embed(
+            "Usage:\n"
+            "`!Joy botrole set @user <staff/management/developer>`\n"
+            "`!Joy botrole remove @user`\n"
+            "`!Joy botrole list`"))
+
+    if action == "set":
+        role = role.lower()
+        if role not in ["staff", "management", "developer"]:
+            return await ctx.send(embed=error_embed(
+                "Role valid: `staff`, `management`, `developer`\n"
+                "*(founder hanya untuk owner bot)*"))
+        bot_roles[str(member.id)] = role
+        save_config(cfg)
+        badge_info = BOT_ROLE_BADGES[role]
+        embed = discord.Embed(
+            title="Bot Role Assigned",
+            description=f"{member.mention} sekarang punya role **{badge_info['label']}** di JoyCannot.",
+            color=badge_info["color"],
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        # Notif DM ke user
+        try:
+            dm = discord.Embed(
+                title="Bot Role Granted!",
+                description=f"Kamu mendapat role **{badge_info['label']}** di JoyCannot!\nCek profilmu dengan `!Joy profile` atau `profile` (jika no-prefix aktif).",
+                color=badge_info["color"]
+            )
+            await member.send(embed=dm)
+        except Exception:
+            pass
+        await ctx.send(embed=embed)
+
+    elif action == "remove":
+        if str(member.id) not in bot_roles:
+            return await ctx.send(embed=error_embed(f"{member.display_name} tidak punya bot role."))
+        removed = bot_roles.pop(str(member.id))
+        save_config(cfg)
+        await ctx.send(embed=success_embed(
+            f"Bot role **{removed.capitalize()}** dihapus dari {member.mention}."))
+    else:
+        await ctx.send(embed=info_embed("Bot Role",
+            "`!Joy botrole set @user <staff/management/developer>`\n"
+            "`!Joy botrole remove @user`\n"
+            "`!Joy botrole list`"))
+
+# ─────────────────────────────────────────────
+# PREMIUM GRANT command (owner only, dengan durasi)
+# Menggantikan slash premium order/info
+# ─────────────────────────────────────────────
+
+@bot.command(name="grantpremium")
+@is_owner()
+async def pfx_grantpremium(ctx: commands.Context, member: discord.Member = None, duration: str = ""):
+    """
+    !Joy grantpremium @user <durasi>  — beri premium dengan durasi
+    Durasi: 7d, 30d, 90d, 1h, permanent
+    !Joy grantpremium @user revoke    — cabut premium
+    """
+    if not member:
+        return await ctx.send(embed=info_embed("Grant Premium",
+            "`!Joy grantpremium @user <durasi>` — beri premium\n"
+            "Durasi: `7d`, `30d`, `90d`, `permanent`\n"
+            "`!Joy grantpremium @user revoke` — cabut premium"))
+
+    premium_users  = cfg.setdefault("premium_users",  [])
+    premium_expiry = cfg.setdefault("premium_expiry", {})
+
+    if duration.lower() == "revoke":
+        if member.id in premium_users:
+            premium_users.remove(member.id)
+        premium_expiry.pop(str(member.id), None)
+        save_config(cfg)
+        try:
+            dm = discord.Embed(title="Premium Expired",
+                description="Premium JoyCannot kamu telah berakhir.\nHubungi owner untuk perpanjang.",
+                color=0xEF4444)
+            await member.send(embed=dm)
+        except Exception:
+            pass
+        return await ctx.send(embed=success_embed(f"Premium dicabut dari {member.mention}."))
+
+    # Parse durasi
+    expiry_dt = None
+    if duration.lower() == "permanent":
+        expiry_dt = None
+    else:
+        m = re.fullmatch(r"(\d+)(d|h|m)", duration.lower())
+        if not m:
+            return await ctx.send(embed=error_embed(
+                "Format durasi tidak valid.\nContoh: `7d`, `30d`, `90d`, `24h`, `permanent`"))
+        amount = int(m.group(1))
+        unit   = m.group(2)
+        delta  = {"d": datetime.timedelta(days=amount),
+                  "h": datetime.timedelta(hours=amount),
+                  "m": datetime.timedelta(minutes=amount)}[unit]
+        expiry_dt = datetime.datetime.now(datetime.timezone.utc) + delta
+
+    if member.id not in premium_users:
+        premium_users.append(member.id)
+    if expiry_dt:
+        premium_expiry[str(member.id)] = expiry_dt.isoformat()
+    else:
+        premium_expiry.pop(str(member.id), None)
+    save_config(cfg)
+
+    dur_display = "Permanent" if not expiry_dt else discord.utils.format_dt(expiry_dt, "R")
+
+    embed = discord.Embed(
+        title="Premium Granted!",
+        description=f"{member.mention} sekarang **Premium**!",
+        color=0xF59E0B,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="Durasi", value=dur_display, inline=True)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text="JoyCannot Premium System")
+
+    try:
+        dm = discord.Embed(
+            title="Premium Activated!",
+            description=(
+                "Premium JoyCannot kamu sudah aktif!\n\n"
+                f"**Expires:** {dur_display}\n\n"
+                "Semua fitur premium sekarang terbuka untukmu.\n"
+                "Setelah expired, akses akan otomatis dicabut."
+            ),
+            color=0xF59E0B
+        )
+        await member.send(embed=dm)
+    except Exception:
+        pass
+
+    await ctx.send(embed=embed)
+
 
 
 # ─────────────────────────────────────────────
